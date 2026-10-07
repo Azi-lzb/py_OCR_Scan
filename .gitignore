@@ -1,0 +1,20 @@
+# ==== 虚拟环境与构建产物 ====
+**/.venv/
+**/venv/
+**/__pycache__/
+**/dist/
+**/build/
+*.pyc
+*.log
+
+# ==== 运行时数据（PID、上传缓存等，可随时重建）====
+/core/data/
+
+# ==== 测试产物（图片与真值入库，中间产物不入）====
+/tests/data/_pdf_pages/
+/tests/data/*.xlsx
+~$*
+
+# ==== 本地工具目录 ====
+/.zcode/
+/tests/data/**/*.xlsx

@@ -1,0 +1,1318 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拍照表格转Excel</title>
+<style>
+/* ==================================================================
+   纸墨风视觉体系 —— 与 3.open-data-audit 审核工具同一家族外观。
+   设计 token（:root 日间纸张 / body.dark 夜间）与主题色板取自审核
+   工具前端；组件样式（按钮/侧栏/卡片/表格/toast/gen-row）同款观感。
+   所有颜色一律经 CSS 变量引用，字面值只出现在变量定义处。
+   ================================================================== */
+:root{
+  --bg:#f2f0e9;
+  --surface:#faf8f1;
+  --surface-2:#efece3;
+  --border:#e2dfd4;
+  --border-strong:#cdc9ba;
+  --text:#1f2a35;
+  --text-2:#64748b;
+  --text-3:#94a3b8;
+  --accent:#2f5f96;
+  --accent-hover:#28517f;
+  --accent-soft:#e9eff6;
+  --accent-ring:rgba(47,95,150,.2);
+  --accent-soft-hover:#dfe9f3;
+  --accent-border:#c6d5e5;
+  --accent-border-strong:#b9cde2;
+  --accent-glow:rgba(47,95,150,.25);
+  --accent-line:rgba(47,95,150,.4);
+  --success:#2e7d52;
+  --success-soft:#e7f2ea;
+  --success-border:#bfe5d2;
+  --warn:#866014;
+  --warn-soft:#f5efdd;
+  --warn-border:#f2d9a7;
+  --warn-strong:#8a5a0a;
+  --danger:#b13a35;
+  --danger-soft:#f9eceb;
+  --danger-border:#f2c6c3;
+  --danger-soft-hover:#fbe0de;
+  --danger-border-hover:#eab2ae;
+  --sidebar:#edeae1;
+  --btn:#ffffff;
+  --btn-hover:#f3f4f3;
+  --console-bg:#101010;
+  --console-text:#c9c9c9;
+  --console-border:#2a2a2a;
+  --console-dim:#7d8a84;
+  --overlay:rgba(0,0,0,.5);
+  --on-accent:#ffffff;
+  --toast-bg:#0c1626;
+  --toast-text:#e8f0fb;
+  --toast-border:rgba(255,255,255,.16);
+  --img-bg:var(--surface-2);
+  --shadow-card:0 1px 2px rgba(31,42,53,.04),0 10px 24px -22px rgba(31,42,53,.3);
+  --shadow-pop:0 8px 22px rgba(16,24,40,.18);
+  --shadow-gen:0 1px 2px rgba(15,35,70,.05);
+  --shadow-float:0 6px 18px rgba(0,0,0,.28);
+  --radius:10px;
+  --radius-sm:7px;
+  --font-display:Georgia,"Songti SC","SimSun",serif;
+}
+/* 夜间模式：只重映射主题变量并覆盖少量浅色，不改动任何布局尺寸。 */
+body.dark{
+  --bg:#121212;
+  --surface:#1a1a1a;
+  --surface-2:#1f1f1f;
+  --border:#2a2a2a;
+  --border-strong:#3d3d3d;
+  --text:#e6e6e6;
+  --text-2:#a6a6a6;
+  --text-3:#7a7a7a;
+  --accent:#4a8dff;
+  --accent-hover:#6ba2ff;
+  --accent-soft:#1b2b45;
+  --accent-ring:rgba(74,141,255,.25);
+  --accent-soft-hover:#22395e;
+  --accent-border:#2c4a7d;
+  --accent-border-strong:#35598f;
+  --accent-glow:rgba(74,141,255,.3);
+  --accent-line:rgba(74,141,255,.4);
+  --success:#43bd8a;
+  --success-soft:#16342a;
+  --success-border:#2f5c46;
+  --warn:#d9a13f;
+  --warn-soft:#3a2c12;
+  --warn-border:#5c4a1a;
+  --warn-strong:#d9a13f;
+  --danger:#e5736c;
+  --danger-soft:#3c211f;
+  --danger-border:#5c302b;
+  --danger-soft-hover:#4a2723;
+  --danger-border-hover:#66352f;
+  --sidebar:#161616;
+  --btn:#1f1f1f;
+  --btn-hover:#292929;
+  /* :root 上的 --img-bg 已随 html 层解析为浅色字面值，夜间必须在 body 重新解析 */
+  --img-bg:var(--surface-2);
+  --shadow-card:0 1px 2px rgba(0,0,0,.35),0 12px 32px -20px rgba(0,0,0,.65);
+  --shadow-pop:0 8px 22px rgba(0,0,0,.5);
+  --shadow-gen:none;
+  --shadow-float:0 6px 18px rgba(0,0,0,.5);
+}
+/* 夜间：输入类控件底色抬亮，避免与深背景融合。 */
+body.dark #titleText:hover,body.dark #titleText:focus{background:var(--surface)}
+body.dark .gen-select{background:var(--surface)}
+*{box-sizing:border-box;}
+html,body{height:100%;}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font:14px/1.55 "Segoe UI","Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+  font-variant-numeric:tabular-nums; -webkit-font-smoothing:antialiased;
+  display:flex; flex-direction:column; overflow:hidden;
+}
+button{font:inherit;}
+button:focus-visible,select:focus-visible{outline:none;}
+:focus-visible{outline:2px solid var(--accent-ring); outline-offset:2px;}
+
+/* ---------- 按钮（审核工具同款 .btn 体系） ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid var(--border);background:var(--btn);color:var(--text-2);padding:8px 13px;border-radius:var(--radius-sm);cursor:pointer;transition:background .15s,border-color .15s,color .15s,box-shadow .15s,transform .05s;user-select:none;white-space:nowrap;position:relative}
+.btn:hover{background:var(--btn-hover);border-color:var(--border-strong);color:var(--text)}
+.btn:active{transform:translateY(1px)}
+.btn:focus-visible{outline:2px solid var(--accent-ring);outline-offset:2px}
+.btn:disabled{opacity:.55;cursor:not-allowed;transform:none}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);box-shadow:0 1px 2px var(--accent-glow)}
+.btn.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover);color:var(--on-accent)}
+.btn.danger{color:var(--danger);border-color:var(--danger-border);background:var(--danger-soft)}
+.btn.danger:hover{background:var(--danger-soft-hover);border-color:var(--danger-border-hover);color:var(--danger)}
+.btn.tiny{padding:4px 10px;font-size:12px;border-radius:8px}
+/* 开关态按钮（高精度/框选忽略区域） */
+.btn.toggle-on{background:var(--accent-soft);border-color:var(--accent-border-strong);color:var(--accent)}
+.btn.toggle-on:hover{background:var(--accent-soft-hover);border-color:var(--accent-border-strong);color:var(--accent-hover)}
+/* 夜间普通按钮：加强描边避免与深背景融合。 */
+body.dark .btn:not(.primary):not(.danger):not(.toggle-on){border-color:var(--border-strong)}
+
+/* ---------- 顶栏 ---------- */
+header{
+  flex:none; display:flex; align-items:center; gap:8px; padding:10px 16px;
+  background:var(--surface); border-bottom:1px solid var(--border);
+}
+header .title{
+  font-family:var(--font-display); font-size:16px; font-weight:700;
+  color:var(--text); margin-right:6px; letter-spacing:.3px;
+}
+header .badge{
+  font-size:12px; padding:3px 10px; border-radius:999px;
+  background:var(--accent-soft); color:var(--accent); max-width:40%;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+header .badge.busy{background:var(--accent-soft-hover); color:var(--accent-hover);}
+header .badge.err{background:var(--danger-soft); color:var(--danger); border:1px solid var(--danger-border);}
+header .spacer{flex:1;}
+
+/* ---------- 左侧导航（审核工具同款：OCR识别 / 设置） ---------- */
+.app-shell{flex:1; min-height:0; display:flex; align-items:stretch;}
+.sidenav{flex:none; width:172px; border-right:1px solid var(--border); background:var(--sidebar); display:flex; flex-direction:column; gap:4px; padding:14px 10px;}
+.sidenav-item{display:flex; align-items:center; gap:9px; width:100%; text-align:left; padding:11px 13px; border:1px solid transparent; border-radius:10px; background:transparent; color:var(--text-2); font:inherit; font-size:13.5px; cursor:pointer; transition:background .15s,color .15s;}
+.sidenav-item svg{flex:none; width:17px; height:17px;}
+.sidenav-item:hover{background:var(--bg); color:var(--text);}
+.sidenav-item.active{background:var(--accent-soft); color:var(--accent); font-weight:600; border-color:transparent;}
+.sidenav-item:focus-visible{outline:2px solid var(--accent-ring); outline-offset:-2px;}
+.sidenav-foot{margin-top:auto; padding:8px 10px; font-size:11px; color:var(--text-3); line-height:1.6;}
+.app-page{flex:1; min-width:0; min-height:0; display:flex; flex-direction:column;}
+.page{flex:1; min-height:0; display:none; flex-direction:column;}
+.page.active{display:flex;}
+main.page.active{display:grid;}
+
+/* ---------- 设置页（审核工具设置中心同款 gen-card/gen-row） ---------- */
+.settings-wrap{flex:1; min-height:0; overflow:auto; padding:18px 22px;}
+.settings-col{max-width:760px;}
+#page-settings .gen-card{margin-bottom:14px;}
+#page-settings .gen-select{width:220px;}
+#page-settings .gen-row{min-height:56px; padding:12px 20px;}
+.engine-status{font-size:11.5px; color:var(--text-3); margin-right:10px;}
+
+/* ---------- 主区：左照片栏 + 右工作区 ---------- */
+main{min-height:0; display:grid; grid-template-columns:252px minmax(0,1fr);}
+aside{
+  background:var(--bg); border-right:1px solid var(--border);
+  display:flex; flex-direction:column; min-height:0;
+}
+.side-head{
+  flex:none; padding:12px 14px 6px; font-size:12px; font-weight:700;
+  color:var(--text-3); letter-spacing:.4px;
+}
+#imgList{flex:1; overflow-y:auto; padding:0 8px 8px; min-height:0;}
+.img-item{
+  display:flex; align-items:center; gap:9px; width:100%;
+  padding:9px 11px; margin-bottom:2px; border:1px solid transparent;
+  border-radius:10px; cursor:pointer; position:relative;
+  transition:background .15s,color .15s;
+}
+.img-item:hover{background:var(--bg);}
+.img-item.active{background:var(--accent-soft);}
+.img-item .thumb{
+  position:relative; flex:none; width:46px; height:46px; border-radius:8px;
+  overflow:hidden; background:var(--surface-2); border:1px solid var(--border);
+}
+.img-item .thumb img{width:100%; height:100%; object-fit:cover; display:block;}
+.img-item .thumb .no{
+  position:absolute; left:3px; top:3px; width:16px; height:16px;
+  border-radius:50%; font-size:10px; font-weight:600;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--border-strong); color:var(--text);
+}
+.img-item.done .thumb .no{background:var(--accent); color:var(--on-accent);}
+.img-item.fail .thumb .no{background:var(--danger); color:var(--on-accent);}
+.img-item.run  .thumb .no{background:var(--accent-hover); color:var(--on-accent);}
+.img-item .meta{flex:1; min-width:0;}
+.img-item .nm{font-size:12.8px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.img-item.active .nm{color:var(--accent); font-weight:600;}
+.img-item .sub{font-size:11px; color:var(--text-3); margin-top:2px;}
+.img-item .sub.fail{color:var(--danger);}
+.img-item .del{
+  flex:none; border:none; background:none; color:var(--text-3); font-size:14px;
+  width:20px; height:20px; border-radius:6px; line-height:1; padding:0;
+  display:grid; place-items:center; cursor:pointer;
+}
+.img-item .del:hover{background:var(--danger-soft); color:var(--danger);}
+.side-empty{padding:26px 14px; color:var(--text-3); text-align:center; line-height:1.9; font-size:12.5px;}
+/* 侧栏底部：外观设置（gen-card / gen-row 结构，与审核工具设置中心同款） */
+.side-appearance{flex:none; margin:0 8px 10px;}
+.side-appearance .gen-card{margin-bottom:0;}
+.gen-card{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; box-shadow:var(--shadow-gen);}
+body.dark .gen-card{box-shadow:none;}
+.gen-card-title{display:flex; align-items:center; font-size:12px; font-weight:700; color:var(--text); padding:9px 12px; background:var(--accent-soft); border-bottom:1px solid var(--border); user-select:none;}
+.gen-row{display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px; border-bottom:1px solid var(--border); transition:background .15s;}
+.gen-row:hover{background:var(--surface-2);}
+.gen-row:last-child{border-bottom:none;}
+.gen-row-left{min-width:0; flex:1;}
+.gen-row-name{font-size:12.5px; font-weight:600; color:var(--text);}
+.gen-row-right{flex:none; display:flex; align-items:center;}
+.gen-select{
+  min-width:0; width:108px; padding:6px 8px; border:1px solid var(--border);
+  border-radius:9px; background:var(--surface); color:var(--text);
+  font:inherit; font-size:12.5px; cursor:pointer;
+  transition:border-color .15s, box-shadow .15s;
+}
+.gen-select:hover{border-color:var(--accent);}
+.gen-select:focus-visible{outline:2px solid var(--accent-ring); outline-offset:-2px;}
+
+/* ---------- 右侧工作区 ---------- */
+#right{display:flex; flex-direction:column; gap:12px; padding:14px 16px; min-width:0; min-height:0; overflow:auto;}
+#previewPane{
+  flex:none; height:42%; min-height:170px; display:flex; flex-direction:column;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  box-shadow:var(--shadow-card); overflow:hidden;
+}
+#previewBar{
+  flex:none; display:flex; gap:8px; padding:7px 12px; align-items:center;
+  background:var(--surface); border-bottom:1px solid var(--border);
+}
+.seg{display:inline-flex; border:1px solid var(--border-strong); border-radius:8px; overflow:hidden;}
+.seg button{
+  border:none; border-radius:0; padding:5px 13px; font-size:12.5px;
+  background:var(--btn); color:var(--text-2); cursor:pointer;
+  transition:background .15s,color .15s;
+}
+.seg button:hover{background:var(--btn-hover); color:var(--text);}
+.seg button.on{background:var(--accent); color:var(--on-accent);}
+#previewBar .hint{margin-left:auto; font-size:11.5px; color:var(--text-3);}
+#previewBox{
+  flex:1; overflow:auto; display:flex; align-items:center; justify-content:center;
+  min-height:0; position:relative; background:var(--img-bg);
+}
+#previewBox img{max-width:100%; max-height:100%; object-fit:contain; box-shadow:var(--shadow-pop); background:var(--surface);}
+#previewBox .ph{color:var(--text-3); font-size:12.5px;}
+#previewMedia{flex:1; width:100%; height:100%; min-width:0; min-height:0; display:flex; align-items:center; justify-content:center;}
+#regLayer{position:absolute; inset:0; pointer-events:none;}
+#linkLayer{position:absolute; inset:0; pointer-events:none;}
+.link-box{
+  position:absolute; border:2px solid var(--accent);
+  background:var(--accent-ring); box-shadow:0 0 0 3px var(--accent-glow);
+  border-radius:3px; pointer-events:none;
+}
+table.grid td.cell-flash{outline:2px solid var(--accent); outline-offset:-2px;
+  animation:cellflash 1.1s ease-out;}
+@keyframes cellflash{0%,40%{background:var(--accent-soft-hover);}100%{}}
+#vSplit{flex:none; height:9px; cursor:row-resize; margin:0 10px; position:relative; border-radius:4px;}
+#vSplit::after{content:''; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+  width:56px; height:3px; border-radius:2px; background:var(--border-strong); transition:background .15s;}
+#vSplit:hover::after,#vSplit.drag::after{background:var(--accent);}
+.region{
+  position:absolute; background:var(--danger-soft);
+  border:1.5px dashed var(--danger); pointer-events:auto; cursor:pointer;
+}
+.region:hover{background:var(--danger-soft-hover);}
+.region .tag{
+  position:absolute; top:-2px; right:-2px; background:var(--danger); color:var(--on-accent);
+  font-size:10px; line-height:1; padding:2px 4px; border-radius:0 0 0 4px;
+}
+#drawRect{position:absolute; border:1.5px dashed var(--accent);
+  background:var(--accent-soft); pointer-events:none; display:none;}
+
+/* ---------- 结果表卡片 ---------- */
+#tablePane{
+  flex:1; display:flex; flex-direction:column; min-height:220px;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  box-shadow:var(--shadow-card); overflow:hidden;
+}
+#titleBar{
+  flex:none; display:none; padding:8px 12px; gap:8px; align-items:center;
+  border-bottom:1px solid var(--border); background:var(--accent-soft);
+}
+#titleBar .tlabel{font-size:11.5px; color:var(--text-2); font-weight:600;}
+#titleText{
+  font-family:var(--font-display); font-size:15px; font-weight:700;
+  color:var(--text); min-width:200px; display:inline-block;
+  padding:2px 8px; border-radius:7px; border:1px dashed transparent;
+}
+#titleText:hover{border-color:var(--accent-border); background:var(--surface);}
+#titleText:focus{outline:none; border-color:var(--accent); background:var(--surface); box-shadow:0 0 0 3px var(--accent-ring);}
+#tableBar{
+  flex:none; display:flex; align-items:center; padding:7px 12px; gap:10px;
+  border-bottom:1px solid var(--border); font-size:12px; color:var(--text-3);
+}
+#tableBar .warn-legend{margin-left:auto;}
+/* 表格：审核工具 editor-table 观感 */
+#tableWrap{
+  flex:1; overflow:auto; min-height:0; margin:10px 12px 12px;
+  border:1px solid var(--border); border-radius:12px; background:var(--img-bg);
+}
+table.grid{border-collapse:collapse; margin:0; font-size:12.8px;}
+table.grid td{
+  border-bottom:1px solid var(--border); padding:6px 10px; min-width:56px; max-width:340px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; height:27px;
+  background:var(--surface); color:var(--text); vertical-align:middle;
+}
+table.grid td:hover{background:var(--accent-soft);}
+table.grid tr.head td{
+  background:var(--surface-2); color:var(--text-2); font-weight:600; font-size:11.8px;
+  position:sticky; top:0; z-index:2;
+}
+table.grid td[contenteditable]:focus{
+  outline:2px solid var(--accent); outline-offset:-2px; background:var(--surface);
+  white-space:normal;
+}
+table.grid td.edited{background:var(--warn-soft);}
+table.grid td.lowconf{background:var(--danger-soft); color:var(--danger);}
+table.grid td.typewarn{background:var(--warn-soft); color:var(--warn-strong);}
+table.grid td.lowconf.typewarn{background:var(--danger-soft);}
+#tableEmpty{padding:26px; color:var(--text-3); text-align:center;}
+
+/* ---------- 导出下拉（reset-menu 同款） ---------- */
+.menu{position:relative;}
+.menu-list{
+  position:absolute; right:0; top:calc(100% + 4px); background:var(--surface);
+  border:1px solid var(--border-strong); border-radius:9px; box-shadow:var(--shadow-pop);
+  min-width:190px; z-index:50; display:none; overflow:hidden; padding:4px;
+}
+.menu.open .menu-list{display:block;}
+.menu-list button{
+  display:block; width:100%; text-align:left; border:none; border-radius:6px;
+  padding:8px 12px; font-size:12.5px; background:transparent; color:var(--text);
+}
+.menu-list button:hover{background:var(--accent-soft); color:var(--accent);}
+.menu-list button:disabled{opacity:.5; cursor:not-allowed;}
+.menu-list button:disabled:hover{background:transparent; color:var(--text);}
+.menu-list .sep{height:1px; background:var(--border); margin:3px 4px;}
+
+/* ---------- 日志（控制台配色） ---------- */
+#logPane{flex:none; background:var(--console-bg); border-top:1px solid var(--console-border);}
+#logToggle{
+  width:100%; text-align:left; background:none; border:none; color:var(--console-dim);
+  padding:5px 14px; font-size:12px; display:flex; gap:8px; align-items:center;
+  font-family:Consolas,"Courier New",monospace;
+}
+#logToggle:hover{color:var(--console-text);}
+#logToggle .arr{transition:transform .15s; display:inline-block;}
+#logToggle.open .arr{transform:rotate(90deg);}
+#logBody{
+  max-height:150px; overflow-y:auto; padding:2px 14px 10px; display:none;
+  font-family:Consolas,"Courier New",monospace; line-height:1.7;
+  font-size:12px; color:var(--console-text);
+}
+#logPane.open #logBody{display:block;}
+#logBody .t{color:var(--console-dim); margin-right:8px;}
+#logBody .err{color:var(--danger);}
+
+/* ---------- Toast（审核工具同款深色浮层） ---------- */
+#toast{
+  position:fixed; left:50%; bottom:88px; transform:translateX(-50%) translateY(8px);
+  z-index:90; background:var(--toast-bg); color:var(--toast-text);
+  font-size:12.5px; line-height:1.5; padding:10px 16px; border-radius:10px;
+  border:1px solid var(--toast-border); box-shadow:var(--shadow-float);
+  opacity:0; visibility:hidden; pointer-events:none;
+  transition:opacity .18s, visibility .18s, transform .18s;
+  max-width:70%;
+}
+#toast.show{opacity:1; visibility:visible; transform:translateX(-50%) translateY(0);}
+#toast.ok{background:var(--success); border-color:var(--success-border); color:var(--on-accent);}
+#toast.err{background:var(--danger); border-color:var(--danger-border); color:var(--on-accent);}
+
+/* ---------- 拖拽导入覆盖层 ---------- */
+#dropMask{
+  position:fixed; inset:0; background:var(--overlay); z-index:98;
+  display:none; align-items:center; justify-content:center; pointer-events:none;
+}
+#dropMask.on{display:flex;}
+#dropMask .box{
+  border:2px dashed var(--accent); border-radius:14px; padding:36px 60px;
+  background:var(--surface); font-size:17px; color:var(--accent);
+  font-weight:600; font-family:var(--font-display);
+}
+</style>
+</head>
+<body>
+<script>
+/* 启动前预应用主题（读 localStorage，避免夜间模式闪白） */
+try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深色'||m==='纯黑'){document.body.classList.add('dark');}})();}catch(e){}
+</script>
+<header>
+  <span class="title">拍照表格转Excel</span>
+  <span class="badge" id="badge">就绪</span>
+  <span class="spacer"></span>
+  <button id="btnChoose" class="btn">选择照片/PDF…</button>
+  <button id="btnStart" class="btn primary" disabled>开始识别</button>
+  <button id="btnCancel" class="btn" disabled>取消</button>
+  <span class="menu" id="menuExport">
+    <button id="btnExport" class="btn" disabled>导出 ▾</button>
+    <div class="menu-list">
+      <button id="btnExcel">Excel 工作簿（全部页）</button>
+      <button id="btnWord">Word 文档（全部页）</button>
+      <div class="sep"></div>
+      <button data-fmt="csv">CSV（当前页）</button>
+      <button data-fmt="txt">TXT 文本（全部页）</button>
+      <button data-fmt="md">Markdown（全部页）</button>
+      <button data-fmt="json">JSON（全部页）</button>
+    </div>
+  </span>
+  <span class="menu" id="menuTools">
+    <button id="btnTools" class="btn">工具 ▾</button>
+    <div class="menu-list">
+      <button id="btnText" disabled>识别文字（当前页）</button>
+      <button id="btnHi" title="server 模型，更准更慢；模型已随程序内置，离线可用">高精度识别</button>
+    </div>
+  </span>
+</header>
+<div class="app-shell">
+<nav class="sidenav" id="sidenav">
+  <button type="button" class="sidenav-item active" data-page="ocr" title="拍照/扫描表格与文字识别">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></svg>
+    OCR识别
+  </button>
+  <button type="button" class="sidenav-item" data-page="settings" title="外观与识别引擎设置">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    设置
+  </button>
+  <div class="sidenav-foot">拍照表格转Excel<br>v25.10.8 · 完全离线</div>
+</nav>
+<div class="app-page">
+<main id="page-ocr" class="page active">
+  <aside>
+    <div class="side-head">照片</div>
+    <div id="imgList"></div>
+  </aside>
+  <div id="right">
+    <div id="previewPane">
+      <div id="previewBar">
+        <div class="seg">
+          <button id="segPhoto" class="on">原图</button>
+          <button id="segOverlay">识别叠加</button>
+        </div>
+        <button id="btnIgnore" class="btn tiny" title="在预览图上拖拽框选不需要识别的区域（页眉/水印/印章），重新识别后生效">框选忽略区域</button>
+        <button id="btnIgClear" class="btn tiny" disabled>清空忽略区</button>
+        <span class="hint" id="previewHint">叠加图可用于确认表格切分是否正确</span>
+      </div>
+      <div id="previewBox"><div id="previewMedia"><span class="ph">选择照片后此处显示预览</span></div><div id="regLayer"></div><div id="linkLayer"></div><div id="drawRect"></div></div>
+    </div>
+    <div id="vSplit" title="拖动调整预览高度 · 双击复位"></div>
+    <div id="tablePane">
+      <div id="titleBar"><span class="tlabel">表格标题</span><span id="titleText" contenteditable="true" spellcheck="false"></span></div>
+      <div id="tableBar">
+        <span id="tableInfo">识别结果（可直接点击单元格修改）</span>
+        <span class="warn-legend"><button id="btnCopy" class="btn tiny" disabled>复制</button></span>
+      </div>
+      <div id="tableWrap"><div id="tableEmpty">尚无识别结果</div></div>
+    </div>
+  </div>
+</main>
+<section id="page-settings" class="page">
+  <div class="settings-wrap">
+    <div class="settings-col">
+      <div class="gen-card">
+        <div class="gen-card-title">外观</div>
+        <div class="gen-row">
+          <div class="gen-row-left">
+            <div class="gen-row-name">界面模式</div>
+            <div class="gen-row-desc">日间为纸张暖底，夜间为深色</div>
+          </div>
+          <div class="gen-row-right">
+            <select id="selTheme" class="gen-select">
+              <option value="日间">日间（纸张）</option>
+              <option value="夜间">夜间</option>
+            </select>
+          </div>
+        </div>
+        <div class="gen-row">
+          <div class="gen-row-left">
+            <div class="gen-row-name">主题色</div>
+            <div class="gen-row-desc">8 个预设色，日/夜自动换浓淡变体</div>
+          </div>
+          <div class="gen-row-right">
+            <select id="selAccent" class="gen-select"></select>
+          </div>
+        </div>
+      </div>
+      <div class="gen-card">
+        <div class="gen-card-title">识别引擎</div>
+        <div class="gen-row">
+          <div class="gen-row-left">
+            <div class="gen-row-name">引擎档位</div>
+            <div class="gen-row-desc">标准档：PP-OCRv4 轻量模型，速度快；高精度档：server 模型，数值与小字更准，速度约慢 2~3 倍。两档模型均已内置，离线可用。</div>
+          </div>
+          <div class="gen-row-right">
+            <span class="engine-status" id="engineStatus"></span>
+            <select id="selEngine" class="gen-select">
+              <option value="std">标准档（快）</option>
+              <option value="high">高精度档（准）</option>
+            </select>
+          </div>
+        </div>
+        <div class="gen-row">
+          <div class="gen-row-left">
+            <div class="gen-row-name">离线说明</div>
+            <div class="gen-row-desc">识别、表格结构、PDF 渲染、导出全部在本地完成，不访问网络。</div>
+          </div>
+        </div>
+      </div>
+      <div class="gen-card">
+        <div class="gen-card-title">关于</div>
+        <div class="gen-row">
+          <div class="gen-row-left">
+            <div class="gen-row-name">拍照表格转Excel</div>
+            <div class="gen-row-desc">本地离线 OCR 工具 · 识别内核 PP-OCRv4（RapidOCR/ONNXRuntime）· 无框线表格 SLANet-Plus</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+</div>
+</div>
+<div id="logPane">
+  <button id="logToggle"><span class="arr">▸</span><span id="logLast">日志</span></button>
+  <div id="logBody"></div>
+</div>
+<div id="toast"></div>
+<div id="dropMask"><div class="box">松开鼠标即可导入照片 / PDF</div></div>
+
+<script>
+"use strict";
+/* ================= bridge（pywebview / Flask 双壳兼容） ================= */
+function initBridge(){
+  if(window.bridge) return Promise.resolve(window.bridge);
+  return new Promise(function(resolve){
+    function done(){ if(window.bridge) resolve(window.bridge); }
+    window.addEventListener("bridgeready", done);          // Flask 注入 / alias 就绪
+    window.addEventListener("pywebviewready", function(){  // pywebview 原生
+      window.bridge = window.pywebview; done();
+    });
+    setTimeout(done, 60);
+    setTimeout(done, 400);
+  });
+}
+var bridgeP = initBridge();
+function api(method){
+  var args = Array.prototype.slice.call(arguments, 1);
+  return bridgeP.then(function(b){
+    return b.api[method].apply(null, args);
+  });
+}
+
+/* ================= 外观：日/夜模式 + 8 主题色（与审核工具同键名同色板） ================= */
+var ACCENT_NAMES = ['默认蓝','青','绿','紫','金','橙','玫','靛'];
+var ACCENT_PALETTES = {
+  '浅色':{
+    '默认蓝':{accent:'#2f5f96',hover:'#28517f',soft:'#e9eff6',ring:'rgba(47,95,150,.2)',softHover:'#dfe9f3',border:'#c6d5e5',borderStrong:'#b9cde2',glow:'rgba(47,95,150,.25)',line:'rgba(47,95,150,.4)'},
+    '青':{accent:'#22677a',hover:'#1b5465',soft:'#e6f1f4',ring:'rgba(34,103,122,.2)',softHover:'#d8e9ee',border:'#b8d5dd',borderStrong:'#a3c8d2',glow:'rgba(34,103,122,.25)',line:'rgba(34,103,122,.4)'},
+    '绿':{accent:'#2c6e54',hover:'#245c47',soft:'#e7f2ec',ring:'rgba(44,110,84,.2)',softHover:'#d9ebe3',border:'#b9d8ca',borderStrong:'#a3ccba',glow:'rgba(44,110,84,.25)',line:'rgba(44,110,84,.4)'},
+    '紫':{accent:'#6d4a7e',hover:'#5c3d6b',soft:'#f1ebf4',ring:'rgba(109,74,126,.2)',softHover:'#e7ddee',border:'#d4c2dd',borderStrong:'#c6afd2',glow:'rgba(109,74,126,.25)',line:'rgba(109,74,126,.4)'},
+    '金':{accent:'#8a5a2e',hover:'#754b25',soft:'#f4ede4',ring:'rgba(138,90,46,.2)',softHover:'#ecdfcd',border:'#ddc6a8',borderStrong:'#d2b591',glow:'rgba(138,90,46,.25)',line:'rgba(138,90,46,.4)'},
+    '橙':{accent:'#c05a28',hover:'#a54d20',soft:'#f9ede4',ring:'rgba(192,90,40,.2)',softHover:'#f2e0d3',border:'#e5c4ae',borderStrong:'#d9b192',glow:'rgba(192,90,40,.25)',line:'rgba(192,90,40,.4)'},
+    '玫':{accent:'#a84a7e',hover:'#8f3d6a',soft:'#f6e9f1',ring:'rgba(168,74,126,.2)',softHover:'#eed9e6',border:'#e0bcd2',borderStrong:'#d3a6c2',glow:'rgba(168,74,126,.25)',line:'rgba(168,74,126,.4)'},
+    '靛':{accent:'#4051a8',hover:'#35448f',soft:'#eaedf7',ring:'rgba(64,81,168,.2)',softHover:'#dbe0f0',border:'#bcc5e5',borderStrong:'#a5b1db',glow:'rgba(64,81,168,.25)',line:'rgba(64,81,168,.4)'}
+  },
+  '深色':{
+    '默认蓝':{accent:'#4a8dff',hover:'#6ba2ff',soft:'#1b2b45',ring:'rgba(74,141,255,.25)',softHover:'#22395e',border:'#2c4a7d',borderStrong:'#35598f',glow:'rgba(74,141,255,.3)',line:'rgba(74,141,255,.4)'},
+    '青':{accent:'#3fb6c9',hover:'#63c8d8',soft:'#12333a',ring:'rgba(63,182,201,.25)',softHover:'#1a454e',border:'#1f515c',borderStrong:'#276774',glow:'rgba(63,182,201,.3)',line:'rgba(63,182,201,.4)'},
+    '绿':{accent:'#43bd8a',hover:'#66cda3',soft:'#16342a',ring:'rgba(67,189,138,.25)',softHover:'#1e453a',border:'#245c4b',borderStrong:'#2d725d',glow:'rgba(67,189,138,.3)',line:'rgba(67,189,138,.4)'},
+    '紫':{accent:'#b48ce0',hover:'#c6a5ea',soft:'#2b2340',ring:'rgba(180,140,224,.25)',softHover:'#352a47',border:'#4d3d63',borderStrong:'#5f4b78',glow:'rgba(180,140,224,.3)',line:'rgba(180,140,224,.4)'},
+    '金':{accent:'#d9a13f',hover:'#e2b566',soft:'#3a2c12',ring:'rgba(217,161,63,.25)',softHover:'#4a3818',border:'#5c4a1a',borderStrong:'#715d22',glow:'rgba(217,161,63,.3)',line:'rgba(217,161,63,.4)'},
+    '橙':{accent:'#e08a4f',hover:'#e8a271',soft:'#3a2416',ring:'rgba(224,138,79,.25)',softHover:'#4a2f1c',border:'#5c3a22',borderStrong:'#71482b',glow:'rgba(224,138,79,.3)',line:'rgba(224,138,79,.4)'},
+    '玫':{accent:'#d97fae',hover:'#e29bbf',soft:'#3a2030',ring:'rgba(217,127,174,.25)',softHover:'#4a2a3c',border:'#5c3448',borderStrong:'#71415a',glow:'rgba(217,127,174,.3)',line:'rgba(217,127,174,.4)'},
+    '靛':{accent:'#7f92e8',hover:'#99a8ee',soft:'#232a4a',ring:'rgba(127,146,232,.25)',softHover:'#2d3658',border:'#384270',borderStrong:'#45518a',glow:'rgba(127,146,232,.3)',line:'rgba(127,146,232,.4)'}
+  }
+};
+function applyTheme(mode){
+  var dark = mode==='夜间' || mode==='深色' || mode==='纯黑';
+  document.body.classList.toggle('dark', dark);
+  try{ localStorage.setItem('uiTheme', String(mode||'日间')); }catch(e){}
+  applyAccent(localStorage.getItem('uiAccent') || '默认蓝');
+}
+function applyAccent(name){
+  var theme = document.body.classList.contains('dark') ? '深色' : '浅色';
+  var palette = (ACCENT_PALETTES[theme]||{})[name]
+             || (ACCENT_PALETTES[theme]||{})['默认蓝']
+             || (ACCENT_PALETTES['浅色'])['默认蓝'];
+  if(!palette) return;
+  // 同时注入 html 与 body：夜间模式的 body.dark{} 定义了同名变量，
+  // 只注入 html 时会被覆盖（表现为夜间模式主题色无法切换）。
+  var roots = [document.documentElement.style, document.body.style];
+  var pairs = [
+    ['--accent',palette.accent],['--accent-hover',palette.hover],
+    ['--accent-soft',palette.soft],['--accent-ring',palette.ring],
+    ['--accent-soft-hover',palette.softHover],['--accent-border',palette.border],
+    ['--accent-border-strong',palette.borderStrong],['--accent-glow',palette.glow],
+    ['--accent-line',palette.line]
+  ];
+  roots.forEach(function(root){ pairs.forEach(function(p){ root.setProperty(p[0], p[1]); }); });
+  try{ localStorage.setItem('uiAccent', String(name||'默认蓝')); }catch(e){}
+}
+/* ================= 侧边导航页切换 ================= */
+(function initSidenav(){
+  var items = document.querySelectorAll(".sidenav-item");
+  Array.prototype.forEach.call(items, function(b){
+    b.addEventListener("click", function(){
+      Array.prototype.forEach.call(items, function(x){
+        x.classList.toggle("active", x === b);
+      });
+      var name = b.dataset.page;
+      $("page-ocr").classList.toggle("active", name === "ocr");
+      $("page-settings").classList.toggle("active", name === "settings");
+    });
+  });
+})();
+
+(function initAppearance(){
+  var selTheme = document.getElementById('selTheme');
+  var selAccent = document.getElementById('selAccent');
+  ACCENT_NAMES.forEach(function(name){
+    var opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    selAccent.appendChild(opt);
+  });
+  var theme = localStorage.getItem('uiTheme') || '日间';
+  if(theme!=='夜间') theme = '日间';
+  selTheme.value = theme;
+  var accent = localStorage.getItem('uiAccent') || '默认蓝';
+  if(ACCENT_NAMES.indexOf(accent) < 0) accent = '默认蓝';
+  selAccent.value = accent;
+  applyTheme(theme);
+  selTheme.addEventListener('change', function(){ applyTheme(selTheme.value); });
+  selAccent.addEventListener('change', function(){ applyAccent(selAccent.value); });
+  var selEngine = document.getElementById('selEngine');
+  selEngine.addEventListener('change', function(){
+    var target = selEngine.value === 'high';
+    api('set_high_accuracy', target).then(function(st){
+      S = st; render();
+      toast(target ? '已切换到高精度档（更准，更慢）' : '已切换到标准档', 'ok');
+    }).catch(function(e){ toast(e.message||String(e), 'err'); });
+  });
+})();
+
+/* ================= 状态渲染 ================= */
+var S = null;                 // 最近一次 get_state
+var lastTableKey = "";        // 表格重建指纹
+var editedCells = {};         // {"r,c":true} 当前图用户改过的格子
+var previewKey = "";
+var thumbCache = {};          // path → 缩略图 dataURL（轮询重渲染不重复请求）
+var thumbPending = {};
+
+function $(id){ return document.getElementById(id); }
+function toast(msg, cls){
+  var t = $("toast");
+  t.textContent = msg; t.className = "show " + (cls||"");
+  clearTimeout(t._h);
+  t._h = setTimeout(function(){ t.className=""; }, 2600);
+}
+
+function render(){
+  if(!S) return;
+  renderBadge(); renderList(); renderButtons(); renderLog();
+  renderTable(); renderPreview(); syncEngineSetting();
+}
+
+/* 设置页：引擎档位下拉与状态同步 */
+function syncEngineSetting(){
+  var sel = $("selEngine");
+  if(!sel) return;
+  var v = S.high_accuracy ? "high" : "std";
+  if(document.activeElement !== sel) sel.value = v;
+  $("engineStatus").textContent = S.busy
+    ? "识别中…" : (S.high_accuracy ? "当前：高精度档" : "当前：标准档");
+}
+
+function renderBadge(){
+  var b = $("badge"), st = S.status || "";
+  b.textContent = st; b.className = "badge" + (S.busy ? " busy" : "");
+  if(/失败|错误/.test(st) && !S.busy) b.className = "badge err";
+}
+
+function renderList(){
+  var box = $("imgList");
+  if(!S.images.length){
+    box.innerHTML = '<div class="side-empty">还没有照片<br>点击右上「选择照片/PDF…」<br>或直接拖入窗口</div>';
+    return;
+  }
+  var html = "";
+  for(var i=0;i<S.images.length;i++){
+    var im = S.images[i], cls = "", sub = "";
+    if(im.status==="完成"){
+      cls="done";
+      sub = (im.mode==="text" ? "文字 "+im.n_rows+" 行" : im.n_rows+"行x"+im.n_cols+"列") + " · "+im.elapsed+"s";
+      if(im.borderless) sub += " · 无框线";
+    }
+    else if(im.status==="失败"){ cls="fail"; sub = im.error||"识别失败"; }
+    else if(im.status==="识别中"){ cls="run"; sub = "识别中…"; }
+    else sub = "等待识别";
+    if(im.warped && sub) sub += " · 已校正";
+    var tpath = esc(im.path);
+    var thumb = thumbCache[im.path]
+      ? '<img alt="" src="'+thumbCache[im.path]+'">' : '';
+    html += '<div class="img-item '+cls+(i===S.current?' active':'')+'" data-i="'+i+'">'
+      + '<span class="thumb" data-tpath="'+tpath+'">'+thumb
+      + '<span class="no">'+(i+1)+'</span></span>'
+      + '<div class="meta"><div class="nm" title="'+esc(im.name)+'">'+esc(im.name)+'</div>'
+      + '<div class="sub'+(im.status==='失败'?' fail':'')+'">'+esc(sub)+'</div></div>'
+      + '<button class="del" data-del="'+i+'" title="移除">×</button></div>';
+  }
+  box.innerHTML = html;
+  // 懒加载缺失的缩略图（拿到后写缓存并就地补 img，轮询不重复请求）
+  Array.prototype.forEach.call(box.querySelectorAll(".thumb[data-tpath]"), function(sp){
+    var p = sp.getAttribute("data-tpath");
+    if(thumbCache[p]) return;
+    if(thumbPending[p]) return;
+    thumbPending[p] = true;
+    var idx = parseInt(sp.closest(".img-item").getAttribute("data-i"), 10);
+    api("get_thumb", idx).then(function(durl){
+      if(!durl) return;
+      thumbCache[p] = durl;
+      Array.prototype.forEach.call(
+        document.querySelectorAll('.thumb[data-tpath]'), function(el){
+          if(el.getAttribute("data-tpath") === p && !el.querySelector("img")){
+            el.insertAdjacentHTML("afterbegin", '<img alt="" src="'+durl+'">');
+          }
+        });
+    }).catch(function(){ thumbPending[p] = false; });
+  });
+  Array.prototype.forEach.call(box.querySelectorAll(".img-item"), function(el){
+    el.addEventListener("click", function(ev){
+      if(ev.target.closest && ev.target.closest("[data-del]")) return;
+      api("set_current", parseInt(el.dataset.i,10)).then(function(st){ S=st; render(); });
+    });
+  });
+  Array.prototype.forEach.call(box.querySelectorAll("[data-del]"), function(el){
+    el.addEventListener("click", function(ev){
+      ev.stopPropagation();
+      api("remove_image", parseInt(el.dataset.del,10))
+        .then(function(st){ S=st; render(); })
+        .catch(function(e){ toast(e.message||String(e), "err"); });
+    });
+  });
+}
+
+function renderButtons(){
+  var n = S.images.length;
+  var hasDone = S.images.some(function(im){ return im.status==="完成"; });
+  var cur = S.current >= 0 && S.current < n;
+  $("btnChoose").disabled = S.busy;
+  $("btnStart").disabled = S.busy || n===0;
+  $("btnText").disabled = S.busy || !cur;
+  $("btnCancel").disabled = !S.busy;
+  $("btnExport").disabled = S.busy || !hasDone;
+  $("btnCopy").disabled = S.busy || !S.has_result;
+  $("btnText").disabled = S.busy || !cur;
+  $("btnHi").disabled = S.busy;
+  $("btnHi").textContent = (S.high_accuracy ? "✓ " : "") + "高精度识别";
+  var ir = cur ? (S.images[S.current].ignore_regions||[]).length : 0;
+  $("btnIgClear").disabled = S.busy || !ir;
+  $("btnIgnore").disabled = S.busy || !cur;
+  $("btnIgnore").className = "btn tiny" + (drawMode ? " toggle-on" : "");
+}
+
+function renderLog(){
+  var last = S.log.length ? S.log[S.log.length-1] : null;
+  $("logLast").textContent = "日志  " + (last ? last.time+"  "+last.text : "暂无");
+  var body = $("logBody"), h = "";
+  for(var i=0;i<S.log.length;i++){
+    var e = S.log[i];
+    h += '<div><span class="t">'+e.time+'</span><span class="'+(/失败|错误|失败：/.test(e.text)?"err":"")+'">'+esc(e.text)+'</span></div>';
+  }
+  body.innerHTML = h;
+  if($("logPane").classList.contains("open")) body.scrollTop = body.scrollHeight;
+}
+
+/* ================= 结果表（可编辑） ================= */
+function renderTable(){
+  var wrap = $("tableWrap");
+  var t = S.table;
+  renderTitle(t);
+  var key = S.current + "|" + (t ? t.rows.length + "x" + (t.rows[0]?t.rows[0].length:0) + "#" + cellFingerprint(t) : "");
+  if(key === lastTableKey){ markEdited(); return; }
+  lastTableKey = key;
+  editedCells = {};
+  if(!t || !t.rows.length){
+    wrap.innerHTML = '<div id="tableEmpty">'+(S.current>=0 && S.images[S.current] && S.images[S.current].status==="失败"
+      ? "该照片识别失败：" + esc(S.images[S.current].error||"") : "尚无识别结果")+'</div>';
+    $("tableInfo").textContent = "识别结果（可直接点击单元格修改）";
+    return;
+  }
+  // 合并单元格占用矩阵
+  var nR = t.rows.length, nC = t.rows[0].length;
+  var used = {};
+  (t.merges||[]).forEach(function(m){
+    for(var r=m[0]; r<m[0]+m[2]; r++) for(var c=m[1]; c<m[1]+m[3]; c++)
+      if(!(r===m[0]&&c===m[1])) used[r+","+c]=1;
+  });
+  var html = '<table class="grid"><tbody>';
+  // 数字列推断：跳过表头行，某列 >=70% 非空值为数字 → 该列应为数字列
+  var numericCols = detectNumericCols(t.rows, t.mode==="text" ? 0 : 1);
+  var numWarnCount = 0;
+  for(var r=0; r<nR; r++){
+    html += "<tr" + (r===0 && t.mode!=="text" ? ' class="head"':"") + ">";
+    for(var c=0; c<nC; c++){
+      if(used[r+","+c]) continue;
+      var span = "", isMerged = false;
+      (t.merges||[]).forEach(function(m){
+        if(m[0]===r && m[1]===c && (m[2]>1||m[3]>1)){
+          span = ' rowspan="'+m[2]+'" colspan="'+m[3]+'"'; isMerged = true;
+        }
+      });
+      var v = t.rows[r][c] || "";
+      var cls2 = "", tip = "";
+      var scKey = r+","+c;
+      var sc = t.scores ? t.scores[scKey] : null;
+      if(sc != null && sc < 0.85 && v){ cls2 = "lowconf"; tip = '置信度 '+sc; }
+      var isHeader = (r===0 && t.mode!=="text");
+      if(!isHeader && !isMerged && v && numericCols[c] && !isNumLike(v)){
+        cls2 = cls2 ? cls2+" typewarn" : "typewarn";
+        tip = (tip ? tip + "；" : "") + "该列应为数字";
+        numWarnCount++;
+      }
+      html += '<td data-r="'+r+'" data-c="'+c+'"'+span
+        + (isMerged?' style="text-align:center"':'')
+        + (cls2?' class="'+cls2+'"':'')
+        + (tip?' title="'+esc(tip)+'"':'')
+        + ' contenteditable="true">'+esc(v)+'</td>';
+    }
+    html += "</tr>";
+  }
+  html += "</tbody></table>";
+  wrap.innerHTML = html;
+  Array.prototype.forEach.call(wrap.querySelectorAll("td[data-r]"), function(td){
+    td.addEventListener("blur", function(){
+      var r = +td.dataset.r, c = +td.dataset.c;
+      var val = td.innerText.replace(/\u00a0/g," ").trim();
+      if((S.table.rows[r][c]||"") !== val){
+        S.table.rows[r][c] = val;
+        editedCells[r+","+c] = true;
+        api("update_cell", r, c, val).catch(function(){});
+      }
+    });
+    td.addEventListener("keydown", function(ev){
+      if(ev.key==="Enter"){ ev.preventDefault(); td.blur(); }
+    });
+    td.addEventListener("click", function(){
+      linkedCell = td.dataset.r + "," + td.dataset.c;
+      applyLinkHighlight();
+    });
+  });
+  $("tableInfo").textContent = (t.mode === "text"
+      ? "文字识别结果：第 " + (S.current+1) + " 张 · " + nR + " 行（每行一条，可点击修改）"
+      : "识别结果：第 " + (S.current+1) + " 张 · "
+        + nR + " 行 x " + nC + " 列（黄底为你改过的格子 · 点击单元格即可修改）")
+    + (numWarnCount ? " · 检测到 " + numWarnCount + " 处数字列异常（橙底，请核对）" : "")
+    + " · 红底=识别置信度低";
+}
+
+function isNumLike(v){
+  var s = String(v||"").replace(/\s+/g,"");
+  if(!s) return false;
+  return /^[-+]?[\d,]+(\.\d+)?%?$/.test(s);
+}
+
+function detectNumericCols(rows, startRow){
+  var cols = {};
+  if(!rows || rows.length < 3) return cols;
+  var nC = rows[0].length;
+  for(var c=0; c<nC; c++){
+    var filled=0, numeric=0;
+    for(var r=startRow; r<rows.length; r++){
+      var v = rows[r][c];
+      if(v==null || !String(v).trim()) continue;
+      filled++;
+      if(isNumLike(v)) numeric++;
+    }
+    if(filled >= 3 && numeric / filled >= 0.7) cols[c] = true;
+  }
+  return cols;
+}
+
+function renderTitle(t){
+  var bar = $("titleBar"), txt = $("titleText");
+  if(!t || !t.rows || !t.rows.length || t.mode==="text"){ bar.style.display = "none"; return; }
+  bar.style.display = "flex";
+  // 用户正在编辑标题时不覆盖输入内容
+  if(document.activeElement !== txt && txt.innerText !== (t.title||"")){
+    txt.innerText = t.title || "";
+  }
+}
+
+function cellFingerprint(t){
+  // 行数列数相同时仍可能内容更新（如补漏后）——拼前 3 行与最后 1 行粗略指纹
+  var fp = [];
+  var rows = t.rows;
+  [0,1,2,rows.length-1].forEach(function(r){
+    if(r>=0 && r<rows.length) fp.push(rows[r].join("|"));
+  });
+  return fp.join("§").length + "." + (t.merges||[]).length;
+}
+
+function markEdited(){
+  var wrap = $("tableWrap");
+  Object.keys(editedCells).forEach(function(k){
+    var p = k.split(",");
+    var td = wrap.querySelector('td[data-r="'+p[0]+'"][data-c="'+p[1]+'"]');
+    if(td) td.classList.add("edited");
+  });
+}
+
+/* ================= 预览 ================= */
+function renderPreview(){
+  var mkey = (S.table && S.table.mode) || "-";
+  var key = S.current + "|" + mkey + "|" + S.preview_mode;
+  if(key === previewKey) return;
+  previewKey = key;
+  $("segPhoto").className = S.preview_mode==="photo" ? "on" : "";
+  $("segOverlay").className = S.preview_mode==="overlay" ? "on" : "";
+  $("previewHint").textContent = S.table && S.table.mode==="text"
+    ? "绿框为逐条识别出的文字行" : "叠加图可用于确认表格切分是否正确";
+  var media = $("previewMedia");
+  var layer = $("regLayer");
+  layer.innerHTML = "";
+  $("linkLayer").innerHTML = "";
+  linkedCell = null;   // 换图后旧联动失效
+  if(S.current < 0){ media.innerHTML = '<span class="ph">选择照片后此处显示预览</span>'; return; }
+  api("get_preview").then(function(url){
+    if(!url){ media.innerHTML = '<span class="ph">该照片暂无预览（尚未识别）</span>'; renderRegions(); return; }
+    var img = new Image();
+    img.src = url; img.alt = "preview";
+    img.onload = function(){ applyLinkHighlight(); };
+    media.innerHTML = "";
+    media.appendChild(img);
+    renderRegions();
+  }).catch(function(){});
+}
+
+/* ================= 点击单元格 ↔ 图中区域 双向联动 ================= */
+var linkedCell = null;   // "r,c"
+
+function tdFor(r, c){
+  return $("tableWrap").querySelector('td[data-r="'+r+'"][data-c="'+c+'"]');
+}
+
+/* 表格 → 图：在预览图上画高亮框并滚入视野 */
+function applyLinkHighlight(){
+  var layer = $("linkLayer");
+  layer.innerHTML = "";
+  if(!linkedCell || !S.table || !S.table.cell_boxes) return;
+  var b = S.table.cell_boxes[linkedCell];
+  var img = $("previewMedia").querySelector("img");
+  if(!b || !img) return;
+  var sc = img.clientWidth / img.naturalWidth;
+  var d = document.createElement("div");
+  d.className = "link-box";
+  d.style.left = (img.offsetLeft + b[0]*sc) + "px";
+  d.style.top = (img.offsetTop + b[1]*sc) + "px";
+  d.style.width = (b[2]*sc) + "px";
+  d.style.height = (b[3]*sc) + "px";
+  layer.appendChild(d);
+  d.scrollIntoView({block:"nearest", inline:"nearest"});
+}
+
+/* 图 → 表格：点预览图上的文字区，定位并闪烁对应单元格 */
+function linkFromImage(ev){
+  if(drawMode) return;
+  if(ev.target.closest && (ev.target.closest(".region") || ev.target.closest(".link-box"))) return;
+  var img = $("previewMedia").querySelector("img");
+  if(!img || !S.table || !S.table.cell_boxes) return;
+  var rect = img.getBoundingClientRect();
+  var px = (ev.clientX - rect.left) / rect.width * img.naturalWidth;
+  var py = (ev.clientY - rect.top) / rect.height * img.naturalHeight;
+  var hit = null;
+  Object.keys(S.table.cell_boxes).forEach(function(k){
+    if(hit) return;
+    var b = S.table.cell_boxes[k];
+    if(px >= b[0] && px <= b[0]+b[2] && py >= b[1] && py <= b[1]+b[3]) hit = k;
+  });
+  if(!hit) return;
+  linkedCell = hit;
+  applyLinkHighlight();
+  var p = hit.split(",");
+  var td = tdFor(p[0], p[1]);
+  if(td){ flashTd(td); }
+}
+
+function flashTd(td){
+  td.classList.remove("cell-flash");
+  void td.offsetWidth;   // 重置动画
+  td.classList.add("cell-flash");
+  td.scrollIntoView({block:"nearest", inline:"nearest"});
+  setTimeout(function(){ td.classList.remove("cell-flash"); }, 1200);
+}
+
+function renderRegions(){
+  var layer = $("regLayer");
+  layer.innerHTML = "";
+  if(S.current < 0 || !S.images[S.current]) return;
+  var regions = S.images[S.current].ignore_regions || [];
+  regions.forEach(function(rg, i){
+    var d = document.createElement("div");
+    d.className = "region";
+    d.style.left = (rg.x*100)+"%"; d.style.top = (rg.y*100)+"%";
+    d.style.width = (rg.w*100)+"%"; d.style.height = (rg.h*100)+"%";
+    d.title = "忽略区域 " + (i+1) + "（点击删除，重新识别后生效）";
+    d.innerHTML = '<span class="tag">×</span>';
+    d.addEventListener("click", function(){
+      if(!confirm("删除该忽略区域？")) return;
+      var cur = S.current;
+      var rest = (S.images[cur].ignore_regions||[]).slice();
+      rest.splice(i,1);
+      api("clear_ignore_regions", cur).then(function(st){
+        S = st;
+        var chain = Promise.resolve();
+        rest.forEach(function(rg){
+          chain = chain.then(function(){ return api("add_ignore_region", cur, rg.x, rg.y, rg.w, rg.h); })
+                       .then(function(st2){ S = st2; });
+        });
+        return chain;
+      }).then(function(){ render(); renderRegions(); })
+        .catch(function(e){ toast(e.message||String(e), "err"); });
+    });
+    layer.appendChild(d);
+  });
+}
+
+/* ================= 轮询与动作 ================= */
+function poll(){
+  api("get_state").then(function(st){
+    S = st; render();
+  }).catch(function(){ /* 外壳切换瞬间容忍失败 */ });
+}
+
+$("btnChoose").addEventListener("click", function(){
+  api("choose_images").then(function(n){
+    if(n>0) toast("已添加 "+n+" 张照片", "ok");
+    return api("get_state");
+  }).then(function(st){ S=st; render(); })
+    .catch(function(e){ toast(e.message||String(e), "err"); });
+});
+$("btnStart").addEventListener("click", function(){
+  api("start_ocr").then(function(ok){ if(!ok) toast("没有待识别的照片"); poll(); });
+});
+$("btnText").addEventListener("click", function(){
+  api("start_text_ocr", S.current).then(function(ok){
+    if(!ok) toast("请先选择一张照片");
+    poll();
+  }).catch(function(e){ toast(e.message||String(e), "err"); });
+});
+$("btnCancel").addEventListener("click", function(){
+  api("cancel_ocr").then(poll);
+});
+$("segPhoto").addEventListener("click", function(){
+  api("set_preview_mode","photo").then(function(st){ S=st; previewKey=""; render(); });
+});
+$("segOverlay").addEventListener("click", function(){
+  api("set_preview_mode","overlay").then(function(st){ S=st; previewKey=""; render(); });
+});
+
+function afterExport(res, kind){
+  if(res.canceled) return;
+  if(res.ok){
+    toast("导出成功：" + res.paths[res.paths.length-1], "ok");
+    if(confirm("已导出到：\n" + res.paths[0] + "\n\n是否立即打开文件？")){
+      api("open_path", res.paths[0]);
+    }
+  } else toast("导出" + kind + "失败", "err");
+}
+$("btnExcel").addEventListener("click", function(){
+  api("export_excel").then(function(res){ afterExport(res, "Excel"); })
+    .catch(function(e){ toast(e.message||String(e), "err"); });
+});
+$("btnWord").addEventListener("click", function(){
+  api("export_word").then(function(res){ afterExport(res, "Word"); })
+    .catch(function(e){ toast(e.message||String(e), "err"); });
+});
+
+$("logToggle").addEventListener("click", function(){
+  var p = $("logPane");
+  p.classList.toggle("open");
+  $("logToggle").classList.toggle("open", p.classList.contains("open"));
+  if(p.classList.contains("open")) $("logBody").scrollTop = 1e9;
+});
+
+(function(){
+  var txt = $("titleText");
+  txt.addEventListener("blur", function(){
+    var val = txt.innerText.replace(/\u00a0/g," ").trim();
+    if(S.table && (S.table.title||"") !== val){
+      S.table.title = val;
+      api("update_title", val).catch(function(){});
+    }
+  });
+  txt.addEventListener("keydown", function(ev){
+    if(ev.key==="Enter"){ ev.preventDefault(); txt.blur(); }
+  });
+})();
+
+/* ================= 拖拽导入 ================= */
+(function(){
+  var mask = $("dropMask");
+  window.addEventListener("dragover", function(ev){
+    ev.preventDefault();
+    if(ev.dataTransfer && Array.prototype.includes.call(ev.dataTransfer.types||[], "Files"))
+      mask.classList.add("on");
+  });
+  window.addEventListener("dragleave", function(ev){
+    if(ev.clientX <= 0 || ev.clientY <= 0 ||
+       ev.clientX >= window.innerWidth || ev.clientY >= window.innerHeight)
+      mask.classList.remove("on");
+  });
+  window.addEventListener("drop", function(ev){
+    ev.preventDefault();          // 阻止浏览器打开文件（pywebview 的路径收集不受影响）
+    mask.classList.remove("on");
+    var files = ev.dataTransfer ? ev.dataTransfer.files : null;
+    if(!files || !files.length) return;
+    if(window.pywebview){
+      // 桌面壳：Python 侧从 DOM drop 事件拿完整路径，轮询会刷新列表
+      toast("已接收拖入文件");
+      return;
+    }
+    // 浏览器壳：上传文件到本地服务
+    var fd = new FormData();
+    for(var i=0;i<files.length;i++) fd.append("files", files[i]);
+    toast("正在上传 " + files.length + " 个文件…");
+    fetch("/api/upload_images", {method:"POST", body:fd})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if(d.error) throw new Error(d.error);
+        toast("已导入 " + d.result + " 个文件", "ok");
+        poll();
+      })
+      .catch(function(e){ toast(e.message||String(e), "err"); });
+  });
+})();
+
+/* ================= 复制到剪贴板（TSV，可直接粘贴进 Excel） ================= */
+$("btnCopy").addEventListener("click", function(){
+  var t = S.table;
+  if(!t || !t.rows.length) return;
+  var used = {};
+  (t.merges||[]).forEach(function(m){
+    for(var r=m[0]; r<m[0]+m[2]; r++) for(var c=m[1]; c<m[1]+m[3]; c++)
+      if(!(r===m[0]&&c===m[1])) used[r+","+c]=1;
+  });
+  var lines = [];
+  for(var r=0; r<t.rows.length; r++){
+    var cells = [];
+    for(var c=0; c<t.rows[r].length; c++){
+      cells.push(used[r+","+c] ? "" : String(t.rows[r][c]||""));
+    }
+    lines.push(cells.join("\t"));
+  }
+  var text = lines.join("\n");
+  function fallback(){
+    var ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta);
+    ta.select(); document.execCommand("copy"); ta.remove();
+    toast("已复制（可直接粘贴到 Excel）", "ok");
+  }
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text)
+      .then(function(){ toast("已复制（可直接粘贴到 Excel）", "ok"); })
+      .catch(fallback);
+  } else fallback();
+});
+
+/* ================= 忽略区域框选 ================= */
+var drawMode = false, drawStart = null;
+$("btnIgnore").addEventListener("click", function(){
+  drawMode = !drawMode;
+  renderButtons();
+  $("previewBox").style.cursor = drawMode ? "crosshair" : "";
+  toast(drawMode ? "在预览图上按住左键拖拽，框出不需要识别的区域" : "已退出框选模式");
+});
+$("btnIgClear").addEventListener("click", function(){
+  api("clear_ignore_regions", S.current).then(function(st){ S=st; previewKey=""; render(); renderRegions(); });
+});
+$("previewBox").addEventListener("click", linkFromImage);
+
+/* ================= 预览/表格分栏拖动 ================= */
+(function(){
+  var split = $("vSplit"), pane = $("previewPane"), right = $("right");
+  var SAVED = "uiPreviewH";
+  var saved = parseInt(localStorage.getItem(SAVED) || "0", 10);
+  if(saved >= 140 && saved <= 2000) pane.style.height = saved + "px";
+  var startY = 0, startH = 0, dragging = false;
+  function clamp(h){
+    var maxH = right.clientHeight - 300;
+    return Math.max(140, Math.min(h, maxH));
+  }
+  split.addEventListener("mousedown", function(ev){
+    dragging = true; startY = ev.clientY; startH = pane.offsetHeight;
+    split.classList.add("drag");
+    document.body.style.userSelect = "none";
+    ev.preventDefault();
+  });
+  window.addEventListener("mousemove", function(ev){
+    if(!dragging) return;
+    pane.style.height = clamp(startH + ev.clientY - startY) + "px";
+  });
+  window.addEventListener("mouseup", function(){
+    if(!dragging) return;
+    dragging = false;
+    split.classList.remove("drag");
+    document.body.style.userSelect = "";
+    try{ localStorage.setItem(SAVED, String(pane.offsetHeight)); }catch(e){}
+  });
+  split.addEventListener("dblclick", function(){
+    pane.style.height = "";
+    try{ localStorage.removeItem(SAVED); }catch(e){}
+  });
+})();
+
+(function(){
+  var box = $("previewBox"), rect = $("drawRect");
+  function norm(ev){
+    var b = box.getBoundingClientRect();
+    return {
+      x: Math.min(Math.max((ev.clientX-b.left)/b.width,0),1),
+      y: Math.min(Math.max((ev.clientY-b.top)/b.height,0),1)
+    };
+  }
+  box.addEventListener("mousedown", function(ev){
+    if(!drawMode || ev.button!==0) return;
+    if(ev.target.closest && ev.target.closest(".region")) return;
+    drawStart = norm(ev);
+    rect.style.display = "block";
+    rect.style.left=(drawStart.x*100)+"%"; rect.style.top=(drawStart.y*100)+"%";
+    rect.style.width="0"; rect.style.height="0";
+    ev.preventDefault();
+  });
+  box.addEventListener("mousemove", function(ev){
+    if(!drawStart) return;
+    var p = norm(ev);
+    rect.style.left=(Math.min(drawStart.x,p.x)*100)+"%";
+    rect.style.top=(Math.min(drawStart.y,p.y)*100)+"%";
+    rect.style.width=(Math.abs(p.x-drawStart.x)*100)+"%";
+    rect.style.height=(Math.abs(p.y-drawStart.y)*100)+"%";
+  });
+  window.addEventListener("mouseup", function(ev){
+    if(!drawStart) return;
+    var p = norm(ev);
+    rect.style.display = "none";
+    var x=Math.min(drawStart.x,p.x), y=Math.min(drawStart.y,p.y);
+    var w=Math.abs(p.x-drawStart.x), h=Math.abs(p.y-drawStart.y);
+    drawStart = null;
+    if(w < 0.01 || h < 0.01) return;   // 视为点击，忽略
+    api("add_ignore_region", S.current, x, y, w, h)
+      .then(function(st){ S=st; previewKey=""; render(); renderRegions(); })
+      .catch(function(e){ toast(e.message||String(e), "err"); });
+  });
+})();
+
+/* ================= 下拉菜单（导出/工具）与高精度开关 ================= */
+function closeMenus(){
+  Array.prototype.forEach.call(document.querySelectorAll(".menu.open"), function(m){
+    m.classList.remove("open");
+  });
+}
+Array.prototype.forEach.call(document.querySelectorAll(".menu > button"), function(b){
+  b.addEventListener("click", function(ev){
+    ev.stopPropagation();
+    var m = b.parentElement, wasOpen = m.classList.contains("open");
+    closeMenus();
+    if(!wasOpen) m.classList.add("open");
+  });
+});
+document.addEventListener("click", closeMenus);
+Array.prototype.forEach.call(document.querySelectorAll(".menu-list [data-fmt]"), function(b){
+  b.addEventListener("click", function(){
+    api("export_data", b.dataset.fmt).then(function(res){ afterExport(res, b.dataset.fmt.toUpperCase()); })
+      .catch(function(e){ toast(e.message||String(e), "err"); });
+  });
+});
+$("btnHi").addEventListener("click", function(){
+  var target = !S.high_accuracy;
+  api("set_high_accuracy", target).then(function(st){
+    S = st; render();
+    if(target && st.busy) toast("正在下载高精度模型（本程序未内置时的兜底，约 85MB）…");
+    else toast(target ? "已切换到高精度档" : "已切换到标准档", "ok");
+  }).catch(function(e){ toast(e.message||String(e), "err"); });
+});
+
+function esc(s){
+  return String(s==null?"":s).replace(/[&<>"']/g, function(ch){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch];
+  });
+}
+
+bridgeP.then(function(){ poll(); setInterval(poll, 800); })
+      .catch(function(){ $("badge").textContent="桥接初始化失败"; });
+</script>
+</body>
+</html>
