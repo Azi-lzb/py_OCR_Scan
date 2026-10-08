@@ -749,12 +749,8 @@ function initTemplateUI(){
       var im = (idx >= 0 && S.images[idx]) || null;
       var hint = val === "__none__" ? "本页不使用模板"
                : (val ? "已指定：" + val.replace("::", " · ") : "已恢复自动匹配");
-      if(im && (im.status === "完成" || im.status === "失败")){
-        api("reprocess_page", idx).then(function(){ poll(); });
-        toast(hint + "，正在重新识别…");
-      } else {
-        toast(hint + "，开始识别时生效");
-      }
+      // 只登记模板，不立即识别——选好所有图片的模板后，点「开始识别」统一批量执行
+      toast(hint + "（点「开始识别」批量执行）");
     }).catch(function(e){ toast(e.message||String(e), "err"); });
   });
   // 统一应用到全部照片

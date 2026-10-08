@@ -459,12 +459,20 @@ class WebApi:
             if doc_name and doc_name != "__none__" and                     not any(t.name == doc_name for t in self._templates):
                 doc_name, page_name = "", ""
             im = self.state["images"][index]
+            changed = (im.get("template_name") != doc_name
+                       or im.get("template_page") != page_name)
             im["template_name"] = doc_name
             im["template_page"] = page_name
+            if changed and im.get("status") in ("完成", "失败"):
+                # 模板已变：标记为待识别，由"开始识别"统一批量重跑
+                im["status"] = "等待"
+                im["template"] = ""
+                im["warning"] = ""
             if doc_name:
                 desc = "不使用" if doc_name == "__none__" else (
                     f"{doc_name}·{page_name}" if page_name else doc_name)
-                self._log(f"已为「{im['name']}」指定模板：{desc}")
+                suffix = "（待识别，点「开始识别」执行）" if changed else ""
+                self._log(f"已为「{im['name']}」指定模板：{desc}{suffix}")
         return self.state
 
     def get_template_pages(self, name: str) -> List[str]:
