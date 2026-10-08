@@ -125,8 +125,14 @@ class WebApi:
 
     def _load_templates(self) -> None:
         from .template_mode import TableTemplate
+        from .xlsx_template import load_xlsx_template
         self._templates = []
         if self._templates_dir.is_dir():
+            for f in sorted(self._templates_dir.glob("*.xlsx")):
+                try:
+                    self._templates.append(load_xlsx_template(f))
+                except Exception as exc:
+                    self._log(f"xlsx 模板损坏已跳过：{f.name}（{exc}）")
             for f in sorted(self._templates_dir.glob("*.json")):
                 try:
                     self._templates.append(TableTemplate.load(f))
@@ -135,7 +141,10 @@ class WebApi:
         self.state["templates"] = [t.name for t in self._templates]
 
     def save_template(self, index: int, name: str) -> Dict[str, Any]:
-        """把当前页（已校对）存为月计表模板。"""
+        """把当前页（已校对）存为 xlsx 模板（命名区域定义结构/数字区）。
+
+        同名文档：追加为新的数据工作表（多页）；首次：新建工作簿。
+        """
         if self.state["busy"]:
             raise RuntimeError("识别进行中，无法保存模板")
         if not (0 <= index < len(self._pages)) or self._pages[index] is None:
@@ -144,40 +153,53 @@ class WebApi:
         if not page.rows or not page.xs or not page.ys:
             raise RuntimeError("该页缺少网格信息，无法生成模板（仅支持有框线表格页）")
         name = (name or "").strip() or f"模板{len(self._templates) + 1}"
-        from .template_mode import TableTemplate, build_page_from_result
+        safe = self._tpl_safe(name)
+        self._templates_dir.mkdir(parents=True, exist_ok=True)
+        path = self._templates_dir / f"{safe}.xlsx"
+
+        from .template_mode import build_page_from_result
         tpl_page = build_page_from_result("第1页", page.rows, page.xs, page.ys,
                                           merges=page.merges)
-        # 同名文档：追加为新页；否则新建文档（首月正常建一次，以后每月换版式才需要加页）
-        doc = next((t for t in self._templates if t.name == name), None)
-        if doc is not None:
-            tpl_page.page_name = "第%d页" % (len(doc.pages) + 1)
-            doc.pages.append(tpl_page)
-        else:
-            tpl_page.page_name = "第1页"
-            doc = TableTemplate(name=name, pages=[tpl_page])
-        safe = self._tpl_safe(name)
-        doc.save(self._templates_dir / f"{safe}.json")
-        # 预览图：每页一张（第N页.jpg）；第一页同时保留文档主预览
+        from .xlsx_template import save_sheet_to_workbook
+        mid = ({tpl_page.mid_section_row} if tpl_page.mid_section_row >= 0
+               else set())
+        sheet_name = f"第{len(self._templates[0].pages) + 1}页"             if any(t.name == name for t in self._templates) else "第1页"
+        if any(t.name == name for t in self._templates):
+            doc0 = next(t for t in self._templates if t.name == name)
+            sheet_name = f"第{len(doc0.pages) + 1}页"                 if hasattr(doc0, "pages") else sheet_name
+        save_sheet_to_workbook(path, sheet_name, page.rows,
+                               tpl_page.value_cols, tpl_page.header_rows,
+                               page.merges, mid_rows=mid,
+                               replace=not path.is_file(),
+                               col_fracs=tpl_page.col_fracs,
+                               row_fracs=tpl_page.row_fracs)
         if page.preview_jpeg:
             try:
-                pv = self._templates_dir / f"{safe}_{tpl_page.page_name}.jpg"
-                pv.write_bytes(page.preview_jpeg)
-                if len(doc.pages) == 1:
-                    (self._templates_dir / f"{safe}.jpg").write_bytes(page.preview_jpeg)
+                (self._templates_dir / f"{safe}.jpg").write_bytes(page.preview_jpeg)
             except OSError:
                 pass
+        # 逐行勾稽公式（上期借-贷 + 本期发生借-贷 - 期末借-贷 = 0），
+        # 写入「勾稽」表；用户对差额列加条件格式即可可视化告警
+        try:
+            from .xlsx_template import generate_balance_checks
+            n_checks = generate_balance_checks(path, sheet_name, tpl_page)
+        except Exception as exc:
+            n_checks = 0
+            self._log(f"勾稽公式生成跳过：{exc}")
         self._load_templates()
-        self._log(f"已保存月计表模板：{name} · {tpl_page.page_name}"
+        self._log(f"已保存 xlsx 模板：{name} · {sheet_name}"
                   f"（{tpl_page.n_rows}行 x {tpl_page.n_cols}列，"
-                  f"{len(tpl_page.value_cols)}个数值列）"
-                  + ("【已追加为该文档的新页】" if len(doc.pages) > 1 else ""))
+                  f"{len(tpl_page.value_cols)}个数值列；命名区域：数字区域/结构区域"
+                  + (f"；已生成 {n_checks} 行勾稽公式" if n_checks else "") + "）")
         return self.state
 
     def delete_template(self, name: str) -> Dict[str, Any]:
         if self.state["busy"]:
             raise RuntimeError("识别进行中，无法删除模板")
         base = self._tpl_safe(name)
-        for f in list(self._templates_dir.glob("*.json")) +                 list(self._templates_dir.glob("*.jpg")):
+        for f in (list(self._templates_dir.glob("*.json"))
+                  + list(self._templates_dir.glob("*.xlsx"))
+                  + list(self._templates_dir.glob("*.jpg"))):
             try:
                 if f.stem == base or f.stem.startswith(base + "_第"):
                     f.unlink()
@@ -188,23 +210,52 @@ class WebApi:
         return self.state
 
     def get_template_detail(self, name: str) -> Dict[str, Any]:
-        """模板完整内容（库页查看/细调用），含基准页预览图 dataURL。"""
+        """模板完整内容（库页查看/细调用）。
+
+        xlsx 模板：每个数据工作表 = 一页，附带命名区域与校验公式信息；
+        旧版 json 模板：沿用原结构。
+        """
         tpl = next((t for t in self._templates if t.name == name), None)
         if tpl is None:
             raise RuntimeError(f"模板不存在：{name}")
+        if hasattr(tpl, "path"):          # xlsx
+            d = {"name": tpl.name, "format": "xlsx", "pages": [],
+                 "checks": list(tpl.check_formulas)}
+            for pg in tpl.pages:
+                pj = self._templates_dir / f"{tpl.name}.jpg"
+                preview = ""
+                if pj.is_file():
+                    try:
+                        preview = ("data:image/jpeg;base64,"
+                                   + base64.b64encode(pj.read_bytes()).decode("ascii"))
+                    except OSError:
+                        pass
+                d["pages"].append({
+                    "page_name": pg.page_name, "rows": pg.rows,
+                    "col_labels": pg.col_labels(),
+                    "value_cols": pg.value_cols,
+                    "header_rows": pg.header_rows,
+                    "merges": pg.merges,
+                    "mid_section_row": (min(pg.mid_rows) if pg.mid_rows else -1),
+                    "num_cells": sorted(list(pg.num_cells))[:400],
+                    "preview": preview,
+                })
+            return d
+        # ---- 旧版 json ----
         d = tpl.to_dict()
         base = self._tpl_safe(name)
-        for i, pg in enumerate(d.get("pages", [])):
-            pv = self._templates_dir / f"{base}_{pg['page_name']}.jpg"
+        for i, pgd in enumerate(d.get("pages", [])):
+            pv = self._templates_dir / f"{base}_{pgd['page_name']}.jpg"
             if not pv.is_file() and i == 0:
                 pv = self._templates_dir / f"{base}.jpg"
-            pg["preview"] = ""
+            pgd["preview"] = ""
             if pv.is_file():
                 try:
-                    pg["preview"] = ("data:image/jpeg;base64,"
-                                     + base64.b64encode(pv.read_bytes()).decode("ascii"))
+                    pgd["preview"] = ("data:image/jpeg;base64,"
+                                      + base64.b64encode(pv.read_bytes()).decode("ascii"))
                 except OSError:
                     pass
+        d["format"] = "json"
         return d
 
     def update_template(self, name: str, patch_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -218,6 +269,8 @@ class WebApi:
         doc = next((t for t in self._templates if t.name == name), None)
         if doc is None or not doc.pages:
             raise RuntimeError(f"模板不存在：{name}")
+        if hasattr(doc, "path"):
+            return self._update_xlsx_template(doc, patch_data)
         patch_data = patch_data or {}
         pidx = int(patch_data.get("page_index", 0))
         if not (0 <= pidx < len(doc.pages)):
@@ -288,6 +341,62 @@ class WebApi:
         self._load_templates()
         self._log(f"模板已更新：{doc.name} · {pg.page_name}（{pg.n_rows}行 x {pg.n_cols}列"
                   f" · 数值列 {len(pg.value_cols)} 个 · 表头 {pg.header_rows} 行）")
+        return self.state
+
+    def _update_xlsx_template(self, doc, patch_data: Dict[str, Any]) -> Dict[str, Any]:
+        """xlsx 模板的库内编辑：重建该表（文本/数值列/表头/中缝/页名）。
+
+        以"整表重写该工作表 + 重命名区域"实现，校验表与其它页不受影响。
+        """
+        from openpyxl import load_workbook
+        from .xlsx_template import save_sheet_to_workbook
+        patch_data = patch_data or {}
+        pidx = int(patch_data.get("page_index", 0))
+        if not (0 <= pidx < len(doc.pages)):
+            raise RuntimeError("页码超出范围")
+        pg = doc.pages[pidx]
+        rows = patch_data.get("rows") or pg.rows
+        n_cols = max(len(r) for r in rows)
+        rows = [[str(c) for c in (list(r) + [""] * n_cols)[:n_cols]]
+                for r in rows]
+        header_rows = int(patch_data.get("header_rows", pg.header_rows))
+        mid_row = int(patch_data.get("mid_section_row",
+                                     min(pg.mid_rows) if pg.mid_rows else -1))
+        vc = sorted({int(c) for c in patch_data.get("value_cols", pg.value_cols)})
+        new_page_name = str(patch_data.get("page_name") or pg.page_name or "第1页")
+
+        path = doc.path
+        wb = load_workbook(path, data_only=False)
+        old_name = pg.page_name
+        # 删旧表、建新表（保留位置尽量靠前）
+        if old_name in wb.sheetnames:
+            del wb[old_name]
+        tmp_path = path.with_suffix(".tmp.xlsx")
+        wb.save(tmp_path)
+        wb.close()
+        save_sheet_to_workbook(tmp_path, new_page_name, rows, vc, header_rows,
+                               pg.merges,
+                               mid_rows=({mid_row} if mid_row >= 0 else set()),
+                               replace=False)
+        tmp_path.replace(path)
+
+        # 改名（文档级）
+        new_name = str(patch_data.get("new_name") or "").strip()
+        if new_name and new_name != doc.name:
+            new_base = self._tpl_safe(new_name)
+            old_jpg = self._templates_dir / f"{self._tpl_safe(doc.name)}.jpg"
+            path.replace(self._templates_dir / f"{new_base}.xlsx")
+            if old_jpg.is_file():
+                try:
+                    old_jpg.replace(self._templates_dir / f"{new_base}.jpg")
+                except OSError:
+                    pass
+            for im in self.state["images"]:
+                if im.get("template_name") == doc.name:
+                    im["template_name"] = new_name
+        self._load_templates()
+        self._log(f"xlsx 模板已更新：{new_name or doc.name} · {new_page_name}"
+                  f"（{len(rows)}行 x {n_cols}列 · 数值列 {len(vc)} 个）")
         return self.state
 
     def delete_template_page(self, name: str, page_index: int) -> Dict[str, Any]:
@@ -689,6 +798,22 @@ class WebApi:
             return {"ok": False, "paths": [], "canceled": True}
         if not out.lower().endswith(".xlsx"):
             out += ".xlsx"
+
+        # 模板页导出：基于模板 xlsx 填值——保留命名区域、格式与校验表公式
+        # （勾稽关系在 Excel 中自动计算；本地也求值一次，非零即提示）
+        tpl_pages = [pg for pg in pages if getattr(pg, "template_file", "")]
+        if len(pages) == 1 and tpl_pages:
+            from .xlsx_template import evaluate_checks, fill_template_workbook
+            pg = tpl_pages[0]
+            fill_template_workbook(Path(pg.template_file),
+                                   {pg.template_page or "第1页": pg}, Path(out))
+            checks = evaluate_checks(Path(pg.template_file), Path(out))
+            self._log(f"已按模板填值导出：{out}")
+            for c in checks[:5]:
+                self._log("勾稽提示：" + c)
+            return {"ok": True, "paths": [out], "canceled": False,
+                    "checks": checks}
+
         write_workbook(out, [{"name": pg.name, "title": pg.title,
                               "plain": pg.mode == "text",
                               "rows": pg.rows, "merges": pg.merges}

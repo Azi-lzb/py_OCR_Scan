@@ -87,6 +87,8 @@ class TablePage:
     warped: bool = False
     borderless: bool = False        # 无框线表格（模型结构识别）
     template: str = ""              # 命中的月计表模板名（模板模式）
+    template_file: str = ""         # xlsx 模板文件路径（导出时基于它填值）
+    template_page: str = ""         # 命中的模板工作表名
     warning: str = ""               # 模板校验等提示信息
     xs: List[int] = field(default_factory=list)   # 列/行边界（有框线模式的网格）
     ys: List[int] = field(default_factory=list)
@@ -104,7 +106,8 @@ class TablePage:
             "n_rows": self.n_rows, "n_cols": self.n_cols,
             "elapsed": round(self.elapsed, 2), "error": self.error,
             "warped": self.warped, "borderless": self.borderless,
-            "template": self.template, "warning": self.warning,
+            "template": self.template, "template_page": self.template_page,
+            "warning": self.warning,
             "min_score": round(self.min_score, 3),
         }
 
@@ -166,13 +169,23 @@ class Scan2ExcelService:
                                              int(c.w * sc), int(c.h * sc)]
                         for c in structure.cells}
 
+                    # 首遍整表 OCR：既用于通用路径，也供 xlsx 模板的
+                    # 结构区文本匹配（先把文字拿到手再决定套哪个模板）
+                    self._step(on_step, "整表 OCR ...")
+                    items = self._filter_regions(
+                        self._engine().recognize_full(structure.image),
+                        regions, structure.image.shape)
+                    per_cell = self._per_cell_texts(structure, items)
+
                     applied = False
                     if templates:
                         applied = self._try_template(page, structure, templates,
-                                                     template_name, on_step)
+                                                     template_name, on_step,
+                                                     per_cell)
                     if not applied:
                         self._recognize_title(page, structure, on_step)
                         self._build_grid(page, structure)
+                        self._fill_from_first_pass(page, per_cell)
                         self._ocr_cells(page, structure, on_step, cancel_event,
                                         regions)
         except _Cancelled:
@@ -443,17 +456,78 @@ class Scan2ExcelService:
         if on_step:
             on_step(text)
 
+    @staticmethod
+    def _per_cell_texts(structure: TableStructure, items) -> Dict:
+        """整表 OCR 结果按中心点分配到格子：{(r,c): (text, score)}。"""
+        per: Dict[Tuple[int, int], List] = {}
+        for box, text, score in items:
+            cell = Scan2ExcelService._locate(structure, box)
+            if cell is None:
+                continue
+            ys = [p[1] for p in box]
+            xs = [p[0] for p in box]
+            per.setdefault((cell.row, cell.col), []).append(
+                (sum(ys) / len(ys), sum(xs) / len(xs), str(text), float(score)))
+        out: Dict[Tuple[int, int], Tuple[str, float]] = {}
+        for key, rows in per.items():
+            out[key] = Scan2ExcelService._merge_fragments(rows)
+        return out
+
+    @staticmethod
+    def _fill_from_first_pass(page: TablePage, per_cell: Dict) -> None:
+        for (r, c), (text, score) in per_cell.items():
+            if r < len(page.rows) and c < len(page.rows[r]):
+                page.rows[r][c] = normalize_text(text)
+                page.scores[f"{r},{c}"] = score
+                page.min_score = min(page.min_score, score)
+
     def _try_template(self, page: TablePage, structure: TableStructure,
                       templates: List, template_name: str,
-                      on_step: Optional[StepCallback]) -> bool:
+                      on_step: Optional[StepCallback],
+                      per_cell: Optional[Dict] = None) -> bool:
         """月计表模板模式：命中模板则只 OCR 数值列（行列与科目文本冻结）。
 
         指定了 template_name 时强制使用该模板（仍校验，不匹配只告警）；
         否则按科目代码命中率自动匹配，低于阈值返回 False 走通用识别。
         """
-        from .template_mode import apply_template, match_template
         if len(structure.xs) < 2 or len(structure.ys) < 2:
             return False
+
+        # ---- xlsx 模板：尺寸严格匹配 + 结构区文本校验（用户主导的稳健方案）----
+        xlsx_tpls = [t for t in templates
+                     if getattr(t, "pages", None) is not None
+                     and hasattr(t, "path")]
+        if xlsx_tpls:
+            from .xlsx_template import apply_xlsx_template, match_xlsx_template
+            doc, tpl_page, score, note, cells = match_xlsx_template(
+                xlsx_tpls, structure,
+                len(structure.ys) - 1, len(structure.xs) - 1,
+                force_doc=template_name)
+            if doc is not None:
+                self._step(on_step, f"套用 xlsx 模板：{doc.name}·{tpl_page.page_name}"
+                                     f"（结构区命中 {score:.0%}）")
+                warns = apply_xlsx_template(page, structure, tpl_page,
+                                            self._engine(), doc_name=doc.name,
+                                            cells=cells)
+                page.template_file = str(doc.path)
+                page.template_page = tpl_page.page_name
+                base = [f"{w}" for w in warns if w]
+                extra = self._run_check_formulas(doc, page)
+                if extra:
+                    base.extend(extra)
+                if base:
+                    page.warning = "；".join(base[:6])
+                    self._step(on_step, "校验提示：" + page.warning)
+                return True
+            if note:
+                self._step(on_step, f"xlsx 模板未匹配（{note}）")
+
+        # ---- 旧版 JSON 模板（沿用比例几何方案）----
+        from .template_mode import apply_template, match_template
+        legacy = [t for t in templates if not hasattr(t, "path")]
+        if not legacy:
+            return False
+        templates = legacy
         # 指定了模板文档名时只在它的各页里路由；否则全库自动匹配
         doc, tpl_page, score = match_template(structure, templates,
                                               force_doc=template_name)
@@ -472,6 +546,28 @@ class Scan2ExcelService:
             page.warning = "；".join(warnings[:6])
             self._step(on_step, "模板校验提示：" + page.warning)
         return True
+
+    @staticmethod
+    def _run_check_formulas(doc, page) -> List[str]:
+        """把当前页填充值写入模板副本并求值"校验"表公式（勾稽关系）。
+
+        公式来自模板 xlsx 的校验表（用户自己写），本地轻量求值；
+        复杂公式跳过并提示在 Excel 中查看。
+        """
+        try:
+            import tempfile
+            from pathlib import Path
+            from .xlsx_template import evaluate_checks, fill_template_workbook
+            tpl_path = Path(doc.path)
+            if not tpl_path.is_file():
+                return []
+            page_name = getattr(page, "template_page", "") or                 (doc.pages[0].page_name if doc.pages else "")
+            with tempfile.TemporaryDirectory() as td:
+                out = Path(td) / "filled.xlsx"
+                fill_template_workbook(tpl_path, {page_name: page}, out)
+                return evaluate_checks(tpl_path, out)
+        except Exception:
+            return []
 
     def _recognize_title(self, page: TablePage, structure: TableStructure,
                          on_step: Optional[StepCallback]) -> None:
