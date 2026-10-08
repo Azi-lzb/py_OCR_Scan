@@ -51,6 +51,10 @@ class TableStructure:
     # 候选标题区域列表 [(tag, x, y, w, h)]，tag: 'A'=处理图 'B'=透视前图
     title_zones: List[Tuple[str, int, int, int, int]] = field(default_factory=list)
 
+    # 整页 det 文本条（可选，由调用方传入 engine 时在 extract_table 内
+    # 识别一次并复用：既做文字掩模辅助检线，也供上层直接分配到格子）
+    det_items: Optional[List] = None
+
     def build_title_zones(self) -> None:
         """生成候选标题区域（表格首条横线之上的窄条）。
 
@@ -151,6 +155,15 @@ def find_table_quad(img: np.ndarray) -> Optional[np.ndarray]:
     return None
 
 
+def _expand_quad(quad: np.ndarray, margin: float = 16.0) -> np.ndarray:
+    """四角向外扩 margin 像素：透视四边形常略微切进表格，
+    导致最左列的行首数字被裁掉。"""
+    c = quad.mean(axis=0)
+    d = quad - c
+    n = np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-6)
+    return (quad + d / n * margin).astype(np.float32)
+
+
 def warp_perspective(img: np.ndarray, quad: np.ndarray) -> np.ndarray:
     (tl, tr, br, bl) = quad
     width = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
@@ -158,7 +171,8 @@ def warp_perspective(img: np.ndarray, quad: np.ndarray) -> np.ndarray:
     width, height = max(width, 32), max(height, 32)
     dst = np.array([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]], dtype=np.float32)
     m = cv2.getPerspectiveTransform(quad, dst)
-    out = cv2.warpPerspective(img, m, (width, height))
+    out = cv2.warpPerspective(img, m, (width, height),
+                              borderMode=cv2.BORDER_REPLICATE)
     # 透视插值在画布最外圈可能留下背景色残条，会被误检成表格线，置白消除
     out[:2, :] = 255
     out[-2:, :] = 255
@@ -407,8 +421,138 @@ def preprocess(img_bgr: np.ndarray) -> np.ndarray:
     return img
 
 
-def extract_table(img_bgr: np.ndarray) -> Optional[TableStructure]:
-    """主入口：输入 BGR 图，输出表格结构；检测不到表格线时返回 None。"""
+def _darker_mask(gray: np.ndarray, contrast: int = 12) -> np.ndarray:
+    """每个像素是否比左右各 3px 的均值暗（返回形状 (h, w-6)，x 偏移 +3）。"""
+    g = gray.astype(np.float32)
+    sides = (g[:, :-6] + g[:, 6:]) / 2.0
+    return (sides - g[:, 3:-3]) > contrast
+
+
+def _shear_correct(img: np.ndarray, darker: np.ndarray) -> np.ndarray:
+    """按近垂直 Hough 段的中位斜率做剪切校正，扶直残余微斜的竖线。
+
+    手机拍照经透视校正后竖线仍可能带 1~3 度的倾斜/弯曲，固定 x 列的
+    检测会因此漏线；此步把这类线扶直成真正的竖直线。
+    darker 传入文字已抹掉的暗度掩模——文字笔画的竖段会污染斜率投票，
+    把真线剪散。
+    """
+    d = darker.astype(np.uint8) * 255
+    h, w = d.shape
+    segs = cv2.HoughLinesP(d, 1, np.pi / 720, threshold=int(h * 0.10),
+                           minLineLength=int(h * 0.18), maxLineGap=int(h * 0.04))
+    if segs is None:
+        return img
+    slopes = []
+    for x1, y1, x2, y2 in np.asarray(segs).reshape(-1, 4):
+        if abs(x2 - x1) <= h * 0.12 and abs(y2 - y1) >= h * 0.18:
+            slopes.append((x2 - x1) / float(y2 - y1 + 1e-6))
+    if len(slopes) < 3:
+        return img
+    slope = float(np.median(slopes))
+    if not (0.012 <= abs(slope) <= 0.06):
+        return img
+    # 质量门控：只有剪切后"竖向浓度"明显提升才动手——文字行驱动的
+    # 假斜率会把真线剪散（浓度=各列暗像素数的平方和，线越集中越大）
+    def concentration(mat):
+        counts = mat.sum(axis=0, dtype=np.float64)
+        return float((counts ** 2).sum())
+    before = concentration(darker)
+    h_, w_ = img.shape[:2]
+    extra = int(abs(slope) * h_) + 2
+    m = np.float32([[1.0, -slope, slope * h_ / 2.0 + extra / 2.0],
+                    [0.0, 1.0, 0.0]])
+    sheared = cv2.warpAffine(d, m, (w_ + extra, h_),
+                             flags=cv2.INTER_NEAREST,
+                             borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    after = concentration(sheared)
+    if after < before * 1.10:
+        return img
+    return cv2.warpAffine(img, m, (w_ + extra, h_), flags=cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_REPLICATE)
+
+
+def _max_run(col: np.ndarray) -> int:
+    idx = np.flatnonzero(col)
+    if idx.size == 0:
+        return 0
+    segs = np.split(idx, np.flatnonzero(np.diff(idx) > 1) + 1)
+    return max(len(s) for s in segs)
+
+
+def _collect_v_lines(gray: np.ndarray, h_lines: List[int],
+                     contrast: int = 12, gap: int = 25,
+                     min_cov: float = 0.12, min_run_frac: float = 0.15) -> List[int]:
+    """弱竖线检测（灰度图包装版，供调试）：见 _v_axes_from_mask。"""
+    darker = _darker_mask(gray, contrast)
+    if h_lines:
+        m = np.zeros(darker.shape[0], bool)
+        for y in h_lines:
+            m[max(0, y - 2):y + 3] = True
+        darker &= ~m[:, None]
+    return _v_axes_from_mask(darker, gap, min_cov, min_run_frac)
+
+
+def _v_axes_from_mask(darker: np.ndarray, gap: int = 25,
+                      min_cov: float = 0.12,
+                      min_run_frac: float = 0.15) -> List[int]:
+    """从"比两侧暗"掩模里检出竖直线 x 坐标：累计覆盖率 + 间隙闭合
+    后的最长连续段双重门槛，并做近距去重（双边界/阴影线）。"""
+    closed = cv2.morphologyEx(darker.astype(np.uint8), cv2.MORPH_CLOSE,
+                              np.ones((gap, 1), np.uint8))
+    cov = closed.mean(axis=0)
+    min_run = min_run_frac * darker.shape[0]
+    cand = cov >= min_cov
+    xs, covs = [], []
+    x = 0
+    n = len(cand)
+    while x < n:
+        if cand[x]:
+            j = x
+            while j + 1 < n and cand[j + 1]:
+                j += 1
+            if j - x > 14:      # 组过宽 = 斜线/弥散噪声，不是竖线
+                x = j + 1
+                continue
+            col = closed[:, x:j + 1].max(axis=1)
+            if _max_run(col) >= min_run:
+                xs.append((x + j) // 2 + 3)   # 抵消 _darker_mask 的 +3 偏移
+                covs.append(float(cov[x:j + 1].max()))
+            x = j + 1
+        else:
+            x += 1
+    # 近距去重：右边界与页面阴影线常被检成两条（相距几十像素），
+    # 保留覆盖率高的那条。正常表格列不可能窄于图宽的 2%。
+    min_gap = max(30, int(darker.shape[1] * 0.025))
+    out_x, out_c = [], []
+    for cx, cv_ in zip(xs, covs):
+        if out_x and cx - out_x[-1] < min_gap:
+            if cv_ > out_c[-1]:
+                out_x[-1], out_c[-1] = cx, cv_
+        else:
+            out_x.append(cx)
+            out_c.append(cv_)
+    return out_x
+
+
+def _synth_grid(shape: Tuple[int, int], xs: List[int], ys: List[int]) -> np.ndarray:
+    """按检出的线坐标合成网格掩模（弱线也能参与轮廓切格）。"""
+    m = np.zeros(shape, np.uint8)
+    for y in ys:
+        y0, y1 = max(0, y - 1), min(shape[0], y + 2)
+        m[y0:y1, :] = 255
+    for x in xs:
+        x0, x1 = max(0, x - 1), min(shape[1], x + 2)
+        m[:, x0:x1] = 255
+    return m
+
+
+def extract_table(img_bgr: np.ndarray,
+                  engine: Optional[object] = None) -> Optional[TableStructure]:
+    """主入口：输入 BGR 图，输出表格结构；检测不到表格线时返回 None。
+
+    engine（OcrEngine）可选：传入时对处理图做一次整页 det，文本框用于
+    构造文字掩模（把文字抹掉后再检线，从根上排除文字笔画链的假线），
+    det 结果存入 structure.det_items 供上层复用，避免重复识别。"""
     if img_bgr is None or img_bgr.size == 0:
         return None
     img = preprocess(img_bgr)
@@ -416,34 +560,134 @@ def extract_table(img_bgr: np.ndarray) -> Optional[TableStructure]:
     warped = False
     quad = find_table_quad(img)
     pre_image = None          # warp 前的转正图（标题在表格线框外，warp 会丢弃）
+    expanded = 0              # 透视外扩量（外扩会带进纸张边缘台阶，检测后需过滤）
     if quad is not None:
-        candidate = warp_perspective(img, quad)
+        expanded = 16
+        candidate = warp_perspective(img, _expand_quad(quad, margin=expanded))
         # 校正后的图必须明显更接近矩形表格，否则保守用原图
         if candidate.shape[0] > 60 and candidate.shape[1] > 60:
             pre_image = img
             img = candidate
             warped = True
 
+    # 剪切校正：斜率只在"文字已抹掉"的暗度掩模上估计（文字笔画的
+    # 竖段会污染斜率投票，把真线剪散），门控通过才真正剪切
+    gray0 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    darker_all0 = _darker_mask(gray0, contrast=10)    # 宽度 = w-6（两侧各去 3px）
+    img = _shear_correct(img, darker_all0)
+
     # 加白色边框：让表格线不贴图像边缘（贴边会导致自适应二值化不稳、
     # 边框被检出为双线、以及最外侧横/竖线漏检）
     pad = 28
     img = cv2.copyMakeBorder(img, pad, pad, pad, pad,
                              cv2.BORDER_CONSTANT, value=(255, 255, 255))
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     bin_img = _binarize(img)
-    h_mask = _line_mask(bin_img, horizontal=True)
-    v_mask = _line_mask(bin_img, horizontal=False)
 
+    # 整页 det：文本框用于交叉否决（横跨候选线的中文文本 ≥2 ⇒ 该处
+    # 不存在竖线），结果存入结构供上层复用，避免重复识别
+    det_items = None
+    if engine is not None:
+        det_items = engine.recognize_full(img)
+
+    ys = _collect_line_positions(_line_mask(bin_img, horizontal=True),
+                                 horizontal=True, total=img.shape[1])
+
+    # 竖线：形态学优先（印刷清晰/合成图最稳）。若结果疑似漏线
+    # （列间距中出现 ≥2.8 倍于中位间距的大空档），切换到弱线检测器
+    # （背景归一化消光照渐变 + 覆盖率/连续段容忍断续浅印），两套取长。
+    def _uniform(axes):
+        if len(axes) < 3:
+            return False
+        gaps_ = [axes[i + 1] - axes[i] for i in range(len(axes) - 1)]
+        med_ = median(sorted(gaps_)[:max(1, len(gaps_) // 2)])
+        return not (med_ > 0 and max(gaps_) >= med_ * 2.8)
+
+    v_mask = _line_mask(bin_img, horizontal=False)
     xs = _collect_line_positions(v_mask, horizontal=False, total=img.shape[0])
-    ys = _collect_line_positions(h_mask, horizontal=True, total=img.shape[1])
-    if len(xs) < 2 or len(ys) < 2:
+    xs = [x for x in xs if img.shape[1] * 0.01 <= x <= img.shape[1] * 0.99]
+    if len(xs) < 5 or not _uniform(xs):
+        g8 = gray.astype(np.uint8)
+        bg = cv2.morphologyEx(g8, cv2.MORPH_CLOSE,
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (51, 51)))
+        norm = cv2.divide(g8, bg, scale=255).astype(np.float32)
+        darker = _darker_mask(norm, contrast=10)      # 宽度 = w-6（两侧各去 3px）
+        xs2 = _v_axes_from_mask(darker, gap=25)
+        xs2 = [x for x in xs2 if img.shape[1] * 0.02 <= x <= img.shape[1] * 0.98]
+        merged = sorted(set(xs) | set(xs2))
+        dedup = []
+        for a in merged:
+            if dedup and a - dedup[-1] < 20:
+                continue
+            dedup.append(a)
+        xs = dedup
+
+    # 中文文本穿越否决：横跨候选线的中文文本框 ≥2 个（不同行次的长名
+    # 被同一 x 贯穿）⇒ 该处照片里不存在竖线，判为文字笔画链。
+    # 数字右对齐紧贴分隔线属正常溢出，不计入；单个框（标题/组表头/
+    # 超长名）也不否决——合并单元格本就允许文字跨列。
+    if det_items:
+        def has_cjk(t):
+            return any('一' <= ch <= '鿿' for ch in t)
+
+        def iou(b1, b2):
+            ix0, iy0 = max(b1[0], b2[0]), max(b1[1], b2[1])
+            ix1, iy1 = min(b1[2], b2[2]), min(b1[3], b2[3])
+            if ix1 <= ix0 or iy1 <= iy0:
+                return 0.0
+            inter = (ix1 - ix0) * (iy1 - iy0)
+            u1 = (b1[2] - b1[0]) * (b1[3] - b1[1])
+            u2 = (b2[2] - b2[0]) * (b2[3] - b2[1])
+            return inter / float(u1 + u2 - inter)
+
+        boxes = []
+        for b, t, _s in det_items:
+            p = np.asarray(b)
+            boxes.append((int(p[:, 0].min()), int(p[:, 1].min()),
+                          int(p[:, 0].max()), int(p[:, 1].max()), has_cjk(str(t))))
+
+        kept = []
+        for x in xs:
+            # 深穿越（两侧各越出 6px）的中文框：数字右对齐紧贴分隔线的
+            # 1~3px 溢出不算；同一文字的重复 det 框按 IoU 去重只算一次；
+            # ≥2 条不同中文文字横跨 ⇒ 该处照片里不存在竖线
+            cross = [bb for bb in boxes
+                     if bb[4] and bb[0] < x - 6 and bb[2] > x + 6]
+            uniq = []
+            for bb in cross:
+                if not any(iou(bb, u) > 0.4 for u in uniq):
+                    uniq.append(bb)
+            if len(uniq) >= 4:
+                continue
+            kept.append(x)
+        xs = kept
+
+    # 合理性门槛：横竖线至少各 3 条才像表格（文字页/噪声页常凑出
+    # 1x1、2x2 的假网格）；不足则交还上层转文字模式
+    if expanded:
+        # 外扩带来的纸张边缘台阶在贴框处被误检成线：过滤 pad 附近的伪线
+        # （真表格边框在 pad+expanded 处，不会被误伤）
+        lim = pad + max(4, expanded // 2)
+        xs = [x for x in xs if lim < x < img.shape[1] - lim]
+        ys = [y for y in ys if lim < y < img.shape[0] - lim]
+    if len(xs) < 3 or len(ys) < 3:
         return None
 
-    grid_mask = cv2.bitwise_or(h_mask, v_mask)
-    cells = _contour_cells(grid_mask, xs, ys)
-    # 轮廓法覆盖不完整（线断裂漏格）时退回纯网格法，保证行列完整
+    # 按检出坐标合成网格掩模，弱线同样参与轮廓切格
+    # 轮廓切格优先用原始线掩模（保留合并单元格的"无线"信息）；
+    # 覆盖不足（线断裂漏格）再用合成网格兜底，最后退回纯网格法
     expect = (len(ys) - 1) * (len(xs) - 1)
+    real_mask = cv2.bitwise_or(_line_mask(bin_img, True),
+                               _line_mask(bin_img, False))
+    cells = _contour_cells(real_mask, xs, ys)
     covered = sum(c.row_span * c.col_span for c in cells)
+    if covered < expect * 0.9:
+        grid_mask = _synth_grid(img.shape[:2], xs, ys)
+        cells2 = _contour_cells(grid_mask, xs, ys)
+        covered2 = sum(c.row_span * c.col_span for c in cells2)
+        cells = cells2 if covered2 > covered else cells
+        covered = max(covered, covered2)
     if covered < expect * 0.9:
         cells = _grid_cells(xs, ys)
 
@@ -452,6 +696,7 @@ def extract_table(img_bgr: np.ndarray) -> Optional[TableStructure]:
         image=img, xs=xs, ys=ys, warped=warped,
         pre_image=(pre_image if warped else img),
         quad=(quad if warped else None),
+        det_items=det_items,
     )
     structure.build_title_zones()
     structure.overlay = _draw_overlay(img, structure)

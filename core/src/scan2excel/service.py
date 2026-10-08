@@ -86,6 +86,10 @@ class TablePage:
     error: Optional[str] = None
     warped: bool = False
     borderless: bool = False        # 无框线表格（模型结构识别）
+    template: str = ""              # 命中的月计表模板名（模板模式）
+    warning: str = ""               # 模板校验等提示信息
+    xs: List[int] = field(default_factory=list)   # 列/行边界（有框线模式的网格）
+    ys: List[int] = field(default_factory=list)
     min_score: float = 1.0          # 全表最低识别置信度，供界面提示
     preview_jpeg: Optional[bytes] = None   # 原图预览（校正后）
     overlay_jpeg: Optional[bytes] = None   # 框线叠加预览
@@ -100,6 +104,7 @@ class TablePage:
             "n_rows": self.n_rows, "n_cols": self.n_cols,
             "elapsed": round(self.elapsed, 2), "error": self.error,
             "warped": self.warped, "borderless": self.borderless,
+            "template": self.template, "warning": self.warning,
             "min_score": round(self.min_score, 3),
         }
 
@@ -117,7 +122,9 @@ class Scan2ExcelService:
                       cancel_event: Optional[threading.Event] = None,
                       force_text: bool = False,
                       server_rec: bool = False,
-                      ignore_regions: Optional[List[Dict]] = None) -> TablePage:
+                      ignore_regions: Optional[List[Dict]] = None,
+                      templates: Optional[List] = None,
+                      template_name: str = "") -> TablePage:
         name = os.path.splitext(os.path.basename(path))[0]
         page = TablePage(path=path, name=name)
         self._server_rec = server_rec
@@ -138,7 +145,8 @@ class Scan2ExcelService:
                 self._process_text(page, img, on_step, cancel_event, regions)
             else:
                 self._step(on_step, "透视校正 / 检测表格线")
-                structure: Optional[TableStructure] = extract_table(img)
+                structure: Optional[TableStructure] = extract_table(
+                    img, engine=self._engine())
                 if structure is None:
                     # 没有表格框线：先试无框线表格模型，不行再转整页文字
                     if not self._process_borderless(page, img, on_step, cancel_event, regions):
@@ -148,6 +156,7 @@ class Scan2ExcelService:
                     page.mode = "table"
                     page.warped = structure.warped
                     page.n_rows, page.n_cols = structure.n_rows, structure.n_cols
+                    page.xs, page.ys = list(structure.xs), list(structure.ys)
 
                     page.preview_jpeg = _encode_jpeg(structure.image)
                     page.overlay_jpeg = _encode_jpeg(structure.overlay)
@@ -157,9 +166,15 @@ class Scan2ExcelService:
                                              int(c.w * sc), int(c.h * sc)]
                         for c in structure.cells}
 
-                    self._recognize_title(page, structure, on_step)
-                    self._build_grid(page, structure)
-                    self._ocr_cells(page, structure, on_step, cancel_event, regions)
+                    applied = False
+                    if templates:
+                        applied = self._try_template(page, structure, templates,
+                                                     template_name, on_step)
+                    if not applied:
+                        self._recognize_title(page, structure, on_step)
+                        self._build_grid(page, structure)
+                        self._ocr_cells(page, structure, on_step, cancel_event,
+                                        regions)
         except _Cancelled:
             page.error = "已取消"
             raise
@@ -428,6 +443,36 @@ class Scan2ExcelService:
         if on_step:
             on_step(text)
 
+    def _try_template(self, page: TablePage, structure: TableStructure,
+                      templates: List, template_name: str,
+                      on_step: Optional[StepCallback]) -> bool:
+        """月计表模板模式：命中模板则只 OCR 数值列（行列与科目文本冻结）。
+
+        指定了 template_name 时强制使用该模板（仍校验，不匹配只告警）；
+        否则按科目代码命中率自动匹配，低于阈值返回 False 走通用识别。
+        """
+        from .template_mode import apply_template, match_template
+        if len(structure.xs) < 2 or len(structure.ys) < 2:
+            return False
+        chosen = None
+        if template_name:
+            chosen = next((t for t in templates if t.name == template_name), None)
+            if chosen is None:
+                return False
+        else:
+            chosen, score = match_template(structure, templates)
+            if chosen is None:
+                self._step(on_step, f"未匹配到月计表模板（命中率 {score:.0%}），"
+                                     "按通用模式识别")
+                return False
+        self._step(on_step, f"套用月计表模板：{chosen.name}")
+        warnings = apply_template(page, structure, chosen, self._engine())
+        page.template = chosen.name
+        if warnings:
+            page.warning = "；".join(warnings[:6])
+            self._step(on_step, "模板校验提示：" + page.warning)
+        return True
+
     def _recognize_title(self, page: TablePage, structure: TableStructure,
                          on_step: Optional[StepCallback]) -> None:
         """识别表格上方的标题：在候选区域里取字号最大的一行文字。
@@ -472,10 +517,14 @@ class Scan2ExcelService:
                    regions: List[Dict] = None) -> None:
         engine = self._engine()
 
-        # 第一步：整表一次识别（det 精裁文本条，质量最高），按中心点分配到格子
+        # 第一步：整表一次识别（det 精裁文本条，质量最高），按中心点分配到格子。
+        # extract_table 已顺带跑过 det（供文字掩模用）时直接复用，不重复识别
         self._step(on_step, "整表 OCR ...")
-        items = self._filter_regions(engine.recognize_full(structure.image),
-                                     regions, structure.image.shape)
+        if structure.det_items is not None:
+            items = list(structure.det_items)
+        else:
+            items = engine.recognize_full(structure.image)
+        items = self._filter_regions(items, regions, structure.image.shape)
         per_cell: Dict[Tuple[int, int], List] = {}
         for box, text, score in items:
             cell = self._locate(structure, box)
@@ -491,7 +540,10 @@ class Scan2ExcelService:
             page.scores[f"{r},{c}"] = score
             page.min_score = min(page.min_score, score)
 
-        # 第二步：仍为空但非空白的格子，逐格完整模式补漏
+        # 第二步：仍为空但非空白的格子，逐格完整模式补漏。
+        # 拍照件的阴影格可能整批被判"非空"导致补漏风暴（每格一次 det+rec，
+        # 数十秒），仅当格内 OCR 前景确实可见时才有价值——用归一化背景的
+        # 文字密度把关：密度极低的阴影/噪点格直接视为空白跳过。
         holes = [cell for cell in structure.cells
                  if not page.rows[cell.row][cell.col]
                  and not _cell_in_regions(cell, regions, structure.image.shape)]

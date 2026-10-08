@@ -423,6 +423,7 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
     <button id="btnStart" class="btn primary" disabled>开始识别</button>
     <button id="btnText" class="btn" disabled title="把当前页强制按整页文字识别（表格页也能提纯文字）">识别文字</button>
     <button id="btnCancel" class="btn" disabled>取消</button>
+    <button id="btnSaveTpl" class="btn" disabled title="把当前页（已校对内容）保存为月计表模板，以后每月套用该模板只识别数值">存为模板</button>
     <span class="spacer"></span>
     <span class="menu" id="menuExport">
       <button id="btnExport" class="btn" disabled>导出 ▾</button>
@@ -513,6 +514,31 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
           <div class="gen-row-left">
             <div class="gen-row-name">离线说明</div>
             <div class="gen-row-desc">识别、表格结构、PDF 渲染、导出全部在本地完成，不访问网络。</div>
+          </div>
+        </div>
+      </div>
+      <div class="gen-card">
+        <div class="gen-card-title">月计表模板</div>
+        <div class="gen-row">
+          <div class="gen-row-left">
+            <div class="gen-row-name">自动套用模板</div>
+            <div class="gen-row-desc">识别到与模板同格式的页面时，自动按模板冻结行列与科目文本，只 OCR 数值格（最准、最快）。模板由"存为模板"按钮从校对好的页面生成。</div>
+          </div>
+          <div class="gen-row-right">
+            <select id="selTplAuto" class="gen-select">
+              <option value="on">开启</option>
+              <option value="off">关闭</option>
+            </select>
+          </div>
+        </div>
+        <div class="gen-row">
+          <div class="gen-row-left">
+            <div class="gen-row-name">已保存模板</div>
+            <div class="gen-row-desc" id="tplList">尚未保存模板</div>
+          </div>
+          <div class="gen-row-right">
+            <select id="selTplDel" class="gen-select"><option value="">（无）</option></select>
+            <button id="btnTplDel" class="btn tiny" style="margin-left:8px">删除</button>
           </div>
         </div>
       </div>
@@ -649,6 +675,32 @@ function applyAccent(name){
   });
 })();
 
+/* ================= 月计表模板（事件绑定延后到 S 就绪后由 initTemplateUI 调用） ================= */
+function initTemplateUI(){
+  $("btnSaveTpl").addEventListener("click", function(){
+    var name = prompt("模板名称（建议含表名，如 会计月计表）：", "会计月计表");
+    if(name === null) return;
+    api("save_template", S.current, name).then(function(st){
+      S = st; render();
+      toast("模板已保存：" + name, "ok");
+    }).catch(function(e){ toast(e.message||String(e), "err"); });
+  });
+  $("btnTplDel").addEventListener("click", function(){
+    var name = $("selTplDel").value;
+    if(!name) return;
+    if(!confirm("删除模板「" + name + "」？")) return;
+    api("delete_template", name).then(function(st){
+      S = st; render();
+      toast("已删除模板：" + name);
+    }).catch(function(e){ toast(e.message||String(e), "err"); });
+  });
+  $("selTplAuto").addEventListener("change", function(){
+    api("set_template_auto", $("selTplAuto").value === "on").then(function(st){
+      S = st; render();
+    });
+  });
+}
+
 /* ================= 状态渲染 ================= */
 var S = null;                 // 最近一次 get_state
 var lastTableKey = "";        // 表格重建指纹
@@ -668,7 +720,21 @@ function toast(msg, cls){
 function render(){
   if(!S) return;
   renderBadge(); renderList(); renderButtons(); renderLog();
-  renderTable(); renderPreview(); syncEngineSetting();
+  renderTable(); renderPreview(); syncEngineSetting(); syncTemplatePanel();
+}
+
+/* 设置页：模板面板同步 */
+function syncTemplatePanel(){
+  var names = S.templates || [];
+  $("tplList").textContent = names.length ? names.join(" · ") : "尚未保存模板";
+  var sel = $("selTplDel"), cur = sel.value;
+  if(sel.options.length !== Math.max(1, names.length)){
+    sel.innerHTML = names.length
+      ? names.map(function(n){ return '<option value="'+esc(n)+'">'+esc(n)+'</option>'; }).join("")
+      : '<option value="">（无）</option>';
+    if(names.indexOf(cur) >= 0) sel.value = cur;
+  }
+  $("selTplAuto").value = (S.template_auto === false) ? "off" : "on";
 }
 
 /* 设置页：引擎档位下拉与状态同步 */
@@ -700,6 +766,8 @@ function renderList(){
       cls="done";
       sub = (im.mode==="text" ? "文字 "+im.n_rows+" 行" : im.n_rows+"行x"+im.n_cols+"列") + " · "+im.elapsed+"s";
       if(im.borderless) sub += " · 无框线";
+      if(im.template) sub = "★" + im.template + " · " + sub;
+      if(im.warning) sub += " · ⚠";
     }
     else if(im.status==="失败"){ cls="fail"; sub = im.error||"识别失败"; }
     else if(im.status==="识别中"){ cls="run"; sub = "识别中…"; }
@@ -751,6 +819,7 @@ function renderList(){
 }
 
 function renderButtons(){
+  $("btnSaveTpl").disabled = S.busy || !S.has_result || !S.table || S.table.mode !== "table";
   var n = S.images.length;
   var hasDone = S.images.some(function(im){ return im.status==="完成"; });
   var cur = S.current >= 0 && S.current < n;
@@ -1287,7 +1356,7 @@ function esc(s){
   });
 }
 
-bridgeP.then(function(){ poll(); setInterval(poll, 800); })
+bridgeP.then(function(){ initTemplateUI(); poll(); setInterval(poll, 800); })
       .catch(function(){ $("badge").textContent="桥接初始化失败"; });
 </script>
 </body>

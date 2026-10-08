@@ -20,8 +20,9 @@ MIN_CELL_HEIGHT = 44
 # 连字符"-"被误读成"1"）
 MIN_FULL_SIDE = 1000
 UPSCALE = 1.5
-# 前景像素占比低于该值视为空格子
-EMPTY_FILL_RATIO = 0.004
+# 前景像素占比低于该值视为空格子（拍照件有阴影噪声，阈值需容忍
+# 少量噪点，否则大片空格触发逐格补漏，整表耗时暴涨）
+EMPTY_FILL_RATIO = 0.015
 
 # 高精度档：server rec 模型（识别更准，速度约慢 2~3 倍）。
 # 本地不存在时从 ModelScope 下载一次（约 85MB），之后离线可用。
@@ -91,6 +92,34 @@ class OcrEngine:
             out.append([[[p / scale for p in pt] for pt in box], text, score])
         return out
 
+    def recognize_cell_numeric(self, cell_img: np.ndarray):
+        """数值格专用识别：不做线消除（数字+千分位逗号构成的横向条带会被
+        误判成线而抹掉）、直接整行 rec（数字单行识别的最优路径），
+        去除拆散空格。用于模板模式的数值列，快且准。"""
+        if cell_img is None or cell_img.size == 0:
+            return "", 1.0
+        h, w = cell_img.shape[:2]
+        pad = 4
+        if h > 2 * pad + 1 and w > 2 * pad + 1:
+            cell_img = cell_img[pad:h - pad, pad:w - pad]
+        if self._is_blank(cell_img):
+            return "", 1.0
+        h, w = cell_img.shape[:2]
+        if h < 52:
+            sc = 52.0 / h
+            cell_img = cv2.resize(cell_img, (max(1, int(w * sc)), 52),
+                                  interpolation=cv2.INTER_CUBIC)
+        result, _ = self._engine(cell_img, use_det=False, use_cls=False,
+                                 use_rec=True)
+        if not result:
+            return "", 1.0
+        text = "".join(str(t) for t, _s in result if str(t).strip())
+        scores = [float(s) for _t, s in result
+                  if str(_t).strip() and s is not None]
+        # 清除拆散空格与全角逗号；保留半角逗号/小数点
+        text = text.replace(" ", "").replace("　", "").replace("，", ",")
+        return text.strip(), (min(scores) if scores else 1.0)
+
     def is_blank(self, cell_img: np.ndarray) -> bool:
         return self._is_blank(cell_img)
 
@@ -146,9 +175,20 @@ class OcrEngine:
 
     @staticmethod
     def _is_blank(img: np.ndarray) -> bool:
+        # 裁掉四周边框线（补漏传入的格子裁切含边框，是强前景，
+        # 不裁的话所有格子都被判"非空"，补漏风暴）
+        h, w = img.shape[:2]
+        if h > 8 and w > 8:
+            img = img[3:h - 3, 3:w - 3]
+        # 背景归一化后再二值：拍照件的灰色阴影格归一化后接近白纸，
+        # 不会被误判为有内容
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        bin_img = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                        cv2.THRESH_BINARY_INV, 15, 12)
+        bg = cv2.morphologyEx(gray, cv2.MORPH_CLOSE,
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)))
+        norm = cv2.divide(gray, bg, scale=255)
+        # 固定阈值而非 Otsu：平坦的阴影格（灰度起伏仅十几级）会让 Otsu
+        # 退化到把噪声分半；归一化后真实笔墨必然显著暗于背景
+        bin_img = (norm < 200).astype(np.uint8) * 255
         return float(np.count_nonzero(bin_img)) / bin_img.size < EMPTY_FILL_RATIO
 
     @staticmethod

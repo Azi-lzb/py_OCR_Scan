@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import os
 import queue
+import re
 import threading
 import time
 import traceback
@@ -72,12 +73,17 @@ class WebApi:
             "preview_mode": "photo",   # photo | overlay
             "has_result": False,
             "high_accuracy": False,    # 高精度识别档（server rec 模型）
+            "templates": [],           # 月计表模板名列表
+            "template_auto": True,     # 识别时自动套用模板
             "log": [],
             "version": "25.10.8.0",
         }
         self._pages: List = []     # TablePage 对象（含预览图字节，不进 state）
         self._previews: Dict[str, bytes] = {}   # path → 加图即生成的原图预览 JPEG
         self._thumbs: Dict[str, bytes] = {}     # path → 列表缩略图（更小）
+        self._templates: List = []              # 已加载的月计表模板
+        self._templates_dir = self.root / "data" / "templates"
+        self._load_templates()
         self._cancel = threading.Event()
         self._window = None        # pywebview 窗口引用（attach_window 注入）
         self._log("程序启动")
@@ -109,6 +115,64 @@ class WebApi:
         if not data:
             return ""
         return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
+
+    # ------------------------------------------------------------------ #
+    # 月计表模板：从校对好的一页生成 / 列表 / 删除 / 指定
+    # ------------------------------------------------------------------ #
+    def _load_templates(self) -> None:
+        from .template_mode import TableTemplate
+        self._templates = []
+        if self._templates_dir.is_dir():
+            for f in sorted(self._templates_dir.glob("*.json")):
+                try:
+                    self._templates.append(TableTemplate.load(f))
+                except Exception:
+                    self._log(f"模板文件损坏已跳过：{f.name}")
+        self.state["templates"] = [t.name for t in self._templates]
+
+    def save_template(self, index: int, name: str) -> Dict[str, Any]:
+        """把当前页（已校对）存为月计表模板。"""
+        if self.state["busy"]:
+            raise RuntimeError("识别进行中，无法保存模板")
+        if not (0 <= index < len(self._pages)) or self._pages[index] is None:
+            raise RuntimeError("该页尚无识别结果")
+        page = self._pages[index]
+        if not page.rows or not page.xs or not page.ys:
+            raise RuntimeError("该页缺少网格信息，无法生成模板（仅支持有框线表格页）")
+        name = (name or "").strip() or f"模板{len(self._templates) + 1}"
+        from .template_mode import build_template_from_page
+        tpl = build_template_from_page(name, page.rows, page.xs, page.ys)
+        safe = re.sub(r'[\/:*?"<>|]+', "_", name)
+        tpl.save(self._templates_dir / f"{safe}.json")
+        self._load_templates()
+        self._log(f"已保存月计表模板：{name}"
+                  f"（{tpl.n_rows}行 x {tpl.n_cols}列，{len(tpl.value_cols)}个数值列，"
+                  f"表头{tpl.header_rows}行冻结）")
+        return self.state
+
+    def delete_template(self, name: str) -> Dict[str, Any]:
+        if self.state["busy"]:
+            raise RuntimeError("识别进行中，无法删除模板")
+        for f in self._templates_dir.glob("*.json"):
+            try:
+                if f.stem == name or f.stem.replace("_", "/") == name:
+                    f.unlink()
+            except OSError:
+                pass
+        self._load_templates()
+        self._log(f"已删除模板：{name}")
+        return self.state
+
+    def set_template_auto(self, on: bool) -> Dict[str, Any]:
+        self.state["template_auto"] = bool(on)
+        self._log("模板自动匹配：" + ("开启" if on else "关闭"))
+        return self.state
+
+    def set_page_template(self, index: int, name: str) -> Dict[str, Any]:
+        """给某页指定模板（重新识别时强制套用）。"""
+        if 0 <= index < len(self.state["images"]):
+            self.state["images"][index]["template_name"] = str(name or "")
+        return self.state
 
     def get_thumb(self, index: int) -> str:
         """列表缩略图（约 96px）dataURL；按路径缓存，复用原图预览解码。"""
@@ -167,6 +231,7 @@ class WebApi:
                 "status": "等待", "mode": "table", "n_rows": 0, "n_cols": 0,
                 "elapsed": 0.0, "error": "", "warped": False, "borderless": False,
                 "min_score": 1.0, "ignore_regions": [],
+                "template_name": "", "template": "", "warning": "",
             })
             added += 1
             if p not in self._previews:
@@ -342,7 +407,10 @@ class WebApi:
                         cancel_event=self._cancel,
                         force_text=force_text,
                         server_rec=bool(self.state.get("high_accuracy")),
-                        ignore_regions=info.get("ignore_regions") or [])
+                        ignore_regions=info.get("ignore_regions") or [],
+                        templates=(self._templates
+                                   if self.state.get("template_auto") else None),
+                        template_name=info.get("template_name", ""))
                 except Exception:  # process_image 只在"用户取消"时向外抛
                     info["status"] = "等待"
                     self._log("已取消识别")
@@ -356,6 +424,8 @@ class WebApi:
                     "error": page.error or "",
                     "warped": page.warped,
                     "borderless": page.borderless,
+                    "template": page.template,
+                    "warning": page.warning,
                     "min_score": round(page.min_score, 3),
                 })
                 if page.error:
