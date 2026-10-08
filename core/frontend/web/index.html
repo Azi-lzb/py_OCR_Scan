@@ -153,19 +153,16 @@ header .badge.busy{background:var(--accent-soft-hover); color:var(--accent-hover
 header .badge.err{background:var(--danger-soft); color:var(--danger); border:1px solid var(--danger-border);}
 header .spacer{flex:1;}
 
-/* ---------- 左侧导航（审核工具同款：OCR识别 / 设置） ---------- */
-.app-shell{flex:1; min-height:0; display:flex; align-items:stretch;}
-.sidenav{flex:none; width:172px; border-right:1px solid var(--border); background:var(--sidebar); display:flex; flex-direction:column; gap:4px; padding:14px 10px;}
-.sidenav-item{display:flex; align-items:center; gap:9px; width:100%; text-align:left; padding:11px 13px; border:1px solid transparent; border-radius:10px; background:transparent; color:var(--text-2); font:inherit; font-size:13.5px; cursor:pointer; transition:background .15s,color .15s;}
-.sidenav-item svg{flex:none; width:17px; height:17px;}
-.sidenav-item:hover{background:var(--bg); color:var(--text);}
-.sidenav-item.active{background:var(--accent-soft); color:var(--accent); font-weight:600; border-color:transparent;}
-.sidenav-item:focus-visible{outline:2px solid var(--accent-ring); outline-offset:-2px;}
-.sidenav-foot{margin-top:auto; padding:8px 10px; font-size:11px; color:var(--text-3); line-height:1.6;}
-.app-page{flex:1; min-width:0; min-height:0; display:flex; flex-direction:column;}
+/* ---------- 顶部导航（标签页：OCR识别 / 设置，审核工具 tab 同款） ---------- */
+.nav-tabs{display:flex; gap:2px; align-self:stretch; align-items:stretch; margin-left:20px;}
+.tab-btn{position:relative; display:inline-flex; align-items:center; white-space:nowrap; padding:0 14px; border:0; border-bottom:2px solid transparent; margin-bottom:-1px; border-radius:0; background:transparent; color:var(--text-2); font:inherit; font-size:13.5px; cursor:pointer; transition:color .15s,border-color .15s;}
+.tab-btn:hover{color:var(--text);}
+.tab-btn.active{color:var(--accent); font-weight:600; border-bottom-color:var(--accent);}
+.tab-btn:focus-visible{outline:2px solid var(--accent-ring); outline-offset:-2px;}
 .page{flex:1; min-height:0; display:none; flex-direction:column;}
 .page.active{display:flex;}
-main.page.active{display:grid;}
+/* OCR 页页内操作条 */
+.page-actions{flex:none; display:flex; gap:8px; align-items:center; padding:9px 16px; background:var(--surface); border-bottom:1px solid var(--border);}
 
 /* ---------- 设置页（审核工具设置中心同款 gen-card/gen-row） ---------- */
 .settings-wrap{flex:1; min-height:0; overflow:auto; padding:18px 22px;}
@@ -175,8 +172,8 @@ main.page.active{display:grid;}
 #page-settings .gen-row{min-height:56px; padding:12px 20px;}
 .engine-status{font-size:11.5px; color:var(--text-3); margin-right:10px;}
 
-/* ---------- 主区：左照片栏 + 右工作区 ---------- */
-main{min-height:0; display:grid; grid-template-columns:252px minmax(0,1fr);}
+/* ---------- OCR 页主区：左照片栏 + 右工作区 ---------- */
+.ocr-body{flex:1; min-height:0; display:grid; grid-template-columns:252px minmax(0,1fr);}
 aside{
   background:var(--bg); border-right:1px solid var(--border);
   display:flex; flex-direction:column; min-height:0;
@@ -414,44 +411,39 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
 <header>
   <span class="title">拍照表格转Excel</span>
   <span class="badge" id="badge">就绪</span>
+  <nav class="nav-tabs">
+    <button type="button" class="tab-btn active" data-page="ocr" title="拍照/扫描表格与文字识别">OCR识别</button>
+    <button type="button" class="tab-btn" data-page="settings" title="外观与识别引擎设置">设置</button>
+  </nav>
   <span class="spacer"></span>
-  <button id="btnChoose" class="btn">选择照片/PDF…</button>
-  <button id="btnStart" class="btn primary" disabled>开始识别</button>
-  <button id="btnCancel" class="btn" disabled>取消</button>
-  <span class="menu" id="menuExport">
-    <button id="btnExport" class="btn" disabled>导出 ▾</button>
-    <div class="menu-list">
-      <button id="btnExcel">Excel 工作簿（全部页）</button>
-      <button id="btnWord">Word 文档（全部页）</button>
-      <div class="sep"></div>
-      <button data-fmt="csv">CSV（当前页）</button>
-      <button data-fmt="txt">TXT 文本（全部页）</button>
-      <button data-fmt="md">Markdown（全部页）</button>
-      <button data-fmt="json">JSON（全部页）</button>
-    </div>
-  </span>
-  <span class="menu" id="menuTools">
-    <button id="btnTools" class="btn">工具 ▾</button>
-    <div class="menu-list">
-      <button id="btnText" disabled>识别文字（当前页）</button>
-      <button id="btnHi" title="server 模型，更准更慢；模型已随程序内置，离线可用">高精度识别</button>
-    </div>
-  </span>
 </header>
-<div class="app-shell">
-<nav class="sidenav" id="sidenav">
-  <button type="button" class="sidenav-item active" data-page="ocr" title="拍照/扫描表格与文字识别">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></svg>
-    OCR识别
-  </button>
-  <button type="button" class="sidenav-item" data-page="settings" title="外观与识别引擎设置">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-    设置
-  </button>
-  <div class="sidenav-foot">拍照表格转Excel<br>v25.10.8 · 完全离线</div>
-</nav>
-<div class="app-page">
 <main id="page-ocr" class="page active">
+  <div class="page-actions">
+    <button id="btnChoose" class="btn">选择照片/PDF…</button>
+    <button id="btnStart" class="btn primary" disabled>开始识别</button>
+    <button id="btnCancel" class="btn" disabled>取消</button>
+    <span class="spacer"></span>
+    <span class="menu" id="menuExport">
+      <button id="btnExport" class="btn" disabled>导出 ▾</button>
+      <div class="menu-list">
+        <button id="btnExcel">Excel 工作簿（全部页）</button>
+        <button id="btnWord">Word 文档（全部页）</button>
+        <div class="sep"></div>
+        <button data-fmt="csv">CSV（当前页）</button>
+        <button data-fmt="txt">TXT 文本（全部页）</button>
+        <button data-fmt="md">Markdown（全部页）</button>
+        <button data-fmt="json">JSON（全部页）</button>
+      </div>
+    </span>
+    <span class="menu" id="menuTools">
+      <button id="btnTools" class="btn">工具 ▾</button>
+      <div class="menu-list">
+        <button id="btnText" disabled>识别文字（当前页）</button>
+        <button id="btnHi" title="server 模型，更准更慢；模型已随程序内置，离线可用">高精度识别</button>
+      </div>
+    </span>
+  </div>
+  <div class="ocr-body">
   <aside>
     <div class="side-head">照片</div>
     <div id="imgList"></div>
@@ -478,6 +470,7 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
       </div>
       <div id="tableWrap"><div id="tableEmpty">尚无识别结果</div></div>
     </div>
+  </div>
   </div>
 </main>
 <section id="page-settings" class="page">
@@ -533,16 +526,14 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
         <div class="gen-card-title">关于</div>
         <div class="gen-row">
           <div class="gen-row-left">
-            <div class="gen-row-name">拍照表格转Excel</div>
-            <div class="gen-row-desc">本地离线 OCR 工具 · 识别内核 PP-OCRv4（RapidOCR/ONNXRuntime）· 无框线表格 SLANet-Plus</div>
+            <div class="gen-row-name">拍照表格转Excel <span style="font-weight:400;color:var(--text-3)">v25.10.8</span></div>
+            <div class="gen-row-desc">本地离线 OCR 工具，完全离线运行 · 识别内核 PP-OCRv4（RapidOCR/ONNXRuntime）· 无框线表格 SLANet-Plus</div>
           </div>
         </div>
       </div>
     </div>
   </div>
 </section>
-</div>
-</div>
 <div id="logPane">
   <button id="logToggle"><span class="arr">▸</span><span id="logLast">日志</span></button>
   <div id="logBody"></div>
@@ -623,8 +614,8 @@ function applyAccent(name){
   try{ localStorage.setItem('uiAccent', String(name||'默认蓝')); }catch(e){}
 }
 /* ================= 侧边导航页切换 ================= */
-(function initSidenav(){
-  var items = document.querySelectorAll(".sidenav-item");
+(function initTabs(){
+  var items = document.querySelectorAll(".tab-btn");
   Array.prototype.forEach.call(items, function(b){
     b.addEventListener("click", function(){
       Array.prototype.forEach.call(items, function(x){
