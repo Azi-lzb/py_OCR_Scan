@@ -17,7 +17,12 @@ from flask import Flask, jsonify, request, Response
 
 ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) \
     else Path(__file__).resolve().parent
-CORE = ROOT / "core" if (ROOT / "core" / "src").is_dir() else ROOT.parent / "core"
+# 冻结态：优先 exe 旁的 core\（发行包布局），否则用 exe 自身目录
+# （模板等运行时数据落在 exe 旁，随 exe 走）
+if getattr(sys, "frozen", False):
+    CORE = ROOT / "core" if (ROOT / "core").is_dir() else ROOT
+else:
+    CORE = ROOT / "core" if (ROOT / "core" / "src").is_dir() else ROOT.parent / "core"
 SRC = CORE / "src"
 if not getattr(sys, "frozen", False) and str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))

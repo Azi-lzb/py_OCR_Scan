@@ -9,6 +9,7 @@ import os
 import re
 import threading
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -90,6 +91,7 @@ class TablePage:
     template_file: str = ""         # xlsx 模板文件路径（导出时基于它填值）
     template_page: str = ""         # 命中的模板工作表名
     fill_mode: str = "vlookup"      # 填充模式：vlookup=按科目对齐 / position=按位置
+    geometry_saved: bool = False    # 本次是否为新模板回写了几何比例
     row_mismatch: Dict = field(default_factory=dict)  # 行对齐结果（供界面提示）
     warning: str = ""               # 模板校验等提示信息
     xs: List[int] = field(default_factory=list)   # 列/行边界（有框线模式的网格）
@@ -521,6 +523,16 @@ class Scan2ExcelService:
                     doc_name=doc.name, cells=cells, fill_mode=fill_mode)
                 page.template_file = str(doc.path)
                 page.template_page = tpl_page.page_name
+                # 手搓模板（无几何信息）：首次成功套用后回写几何比例，
+                # 之后匹配不再要求照片网格与模板尺寸严格一致
+                if (not getattr(tpl_page, "col_fracs", None) and cells
+                        and len(cells) == tpl_page.n_rows * tpl_page.n_cols):
+                    from .xlsx_template import capture_geometry
+                    if capture_geometry(Path(doc.path), tpl_page.page_name,
+                                        structure.xs, structure.ys):
+                        page.geometry_saved = True
+                        self._step(on_step, "已为模板页「%s」记录几何比例"
+                                            "（后续匹配更稳）" % tpl_page.page_name)
                 if mismatch and (mismatch.get("unmatched") or mismatch.get("extra")):
                     n_bad = (len(mismatch.get("unmatched") or [])
                              + len(mismatch.get("extra") or []))

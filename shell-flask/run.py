@@ -14,7 +14,9 @@ ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) \
     else Path(__file__).resolve().parent
 # 打包态：exe 自身目录即工作根；开发态：core/ 与 shell 同级
 if getattr(sys, "frozen", False):
-    CORE = ROOT
+    # 发行包布局：exe 旁有 core\ 就用它（数据落 core/data）；
+    # 否则用 exe 自身目录（模板等数据随 exe 走）
+    CORE = ROOT / "core" if (ROOT / "core").is_dir() else ROOT
 elif (ROOT / "core" / "src").is_dir():
     CORE = ROOT / "core"
 else:

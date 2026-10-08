@@ -18,6 +18,8 @@ import traceback
 import webbrowser
 from datetime import datetime
 from pathlib import Path
+
+from openpyxl.utils import get_column_letter
 from typing import Any, Dict, List, Optional
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
@@ -83,6 +85,11 @@ class WebApi:
         self._thumbs: Dict[str, bytes] = {}     # path → 列表缩略图（更小）
         self._templates: List = []              # 已加载的月计表模板
         self._templates_dir = self.root / "data" / "templates"
+        try:
+            self._templates_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        self.state["templates_dir"] = str(self._templates_dir)
         self._load_templates()
         self._cancel = threading.Event()
         self._window = None        # pywebview 窗口引用（attach_window 注入）
@@ -130,7 +137,12 @@ class WebApi:
         if self._templates_dir.is_dir():
             for f in sorted(self._templates_dir.glob("*.xlsx")):
                 try:
-                    self._templates.append(load_xlsx_template(f))
+                    t = load_xlsx_template(f)
+                    self._templates.append(t)
+                    if getattr(t, "inferred_regions", False):
+                        self._log(f"模板「{t.name}」未定义命名区域，已按启发式"
+                                  "推断数字区（建议在 Excel 中用名称管理器"
+                                  "定义 数字区域/结构区域）")
                 except Exception as exc:
                     self._log(f"xlsx 模板损坏已跳过：{f.name}（{exc}）")
             for f in sorted(self._templates_dir.glob("*.json")):
@@ -173,11 +185,6 @@ class WebApi:
                                replace=not path.is_file(),
                                col_fracs=tpl_page.col_fracs,
                                row_fracs=tpl_page.row_fracs)
-        if page.preview_jpeg:
-            try:
-                (self._templates_dir / f"{safe}.jpg").write_bytes(page.preview_jpeg)
-            except OSError:
-                pass
         # 逐行勾稽公式（上期借-贷 + 本期发生借-贷 - 期末借-贷 = 0），
         # 写入「勾稽」表；用户对差额列加条件格式即可可视化告警
         try:
@@ -193,22 +200,6 @@ class WebApi:
                   + (f"；已生成 {n_checks} 行勾稽公式" if n_checks else "") + "）")
         return self.state
 
-    def delete_template(self, name: str) -> Dict[str, Any]:
-        if self.state["busy"]:
-            raise RuntimeError("识别进行中，无法删除模板")
-        base = self._tpl_safe(name)
-        for f in (list(self._templates_dir.glob("*.json"))
-                  + list(self._templates_dir.glob("*.xlsx"))
-                  + list(self._templates_dir.glob("*.jpg"))):
-            try:
-                if f.stem == base or f.stem.startswith(base + "_第"):
-                    f.unlink()
-            except OSError:
-                pass
-        self._load_templates()
-        self._log(f"已删除模板：{name}")
-        return self.state
-
     def get_template_detail(self, name: str) -> Dict[str, Any]:
         """模板完整内容（库页查看/细调用）。
 
@@ -219,42 +210,26 @@ class WebApi:
         if tpl is None:
             raise RuntimeError(f"模板不存在：{name}")
         if hasattr(tpl, "path"):          # xlsx
-            d = {"name": tpl.name, "format": "xlsx", "pages": [],
-                 "checks": list(tpl.check_formulas)}
+            # 命名区域是模板的事实来源：数字区域=每月 OCR 的格；
+            # 结构区域=冻结文本格（用于与照片匹配/校验）；中缝表头=段界线。
+            d = {"name": tpl.name, "format": "xlsx",
+                 "file": str(tpl.path), "pages": []}
             for pg in tpl.pages:
-                pj = self._templates_dir / f"{tpl.name}.jpg"
-                preview = ""
-                if pj.is_file():
-                    try:
-                        preview = ("data:image/jpeg;base64,"
-                                   + base64.b64encode(pj.read_bytes()).decode("ascii"))
-                    except OSError:
-                        pass
+                # 单元格区域映射（只读预览着色）：数字区域=绿、结构区域=黄
+                region_map = {f"{r},{c}": "num" for (r, c) in pg.num_cells}
+                for (r, c) in pg.struct_cells:
+                    region_map.setdefault(f"{r},{c}", "struct")
                 d["pages"].append({
-                    "page_name": pg.page_name, "rows": pg.rows,
-                    "col_labels": pg.col_labels(),
-                    "value_cols": pg.value_cols,
-                    "header_rows": pg.header_rows,
+                    "page_name": pg.page_name,
+                    "rows": pg.rows,
                     "merges": pg.merges,
-                    "mid_section_row": (min(pg.mid_rows) if pg.mid_rows else -1),
-                    "num_cells": sorted(list(pg.num_cells))[:400],
-                    "preview": preview,
+                    "n_rows": pg.n_rows, "n_cols": pg.n_cols,
+                    "regions": region_map,
+                    "checks": self._cf_rules(pg.page_name),
                 })
             return d
-        # ---- 旧版 json ----
+        # ---- 旧版 json（预览已废弃：模板库以 sheet 为唯一基准）----
         d = tpl.to_dict()
-        base = self._tpl_safe(name)
-        for i, pgd in enumerate(d.get("pages", [])):
-            pv = self._templates_dir / f"{base}_{pgd['page_name']}.jpg"
-            if not pv.is_file() and i == 0:
-                pv = self._templates_dir / f"{base}.jpg"
-            pgd["preview"] = ""
-            if pv.is_file():
-                try:
-                    pgd["preview"] = ("data:image/jpeg;base64,"
-                                      + base64.b64encode(pv.read_bytes()).decode("ascii"))
-                except OSError:
-                    pass
         d["format"] = "json"
         return d
 
@@ -343,6 +318,37 @@ class WebApi:
                   f" · 数值列 {len(pg.value_cols)} 个 · 表头 {pg.header_rows} 行）")
         return self.state
 
+    def _cf_rules(self, sheet_name: str, name: str = "") -> List[Dict[str, Any]]:
+        """读取模板某表上的条件格式规则（勾稽/告警规则，供界面展示）。"""
+        doc = next((t for t in self._templates
+                    if not name or t.name == name), None)
+        if doc is None or not hasattr(doc, "path"):
+            return []
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(doc.path, data_only=False)
+            if sheet_name not in wb.sheetnames:
+                wb.close()
+                return []
+            ws = wb[sheet_name]
+            rules = []
+            for cf in ws.conditional_formatting:
+                for rule in cf.rules:
+                    rules.append({
+                        "range": str(cf.sqref),
+                        "type": rule.type,
+                        "formula": (str(rule.formula[0])
+                                    if getattr(rule, "formula", None) else ""),
+                        "desc": (rule.dxf.fill.bgColor.rgb
+                                 if getattr(rule, "dxf", None)
+                                 and rule.dxf and rule.dxf.fill
+                                 and rule.dxf.fill.bgColor else ""),
+                    })
+            wb.close()
+            return rules
+        except Exception:
+            return []
+
     def _update_xlsx_template(self, doc, patch_data: Dict[str, Any]) -> Dict[str, Any]:
         """xlsx 模板的库内编辑：重建该表（文本/数值列/表头/中缝/页名）。
 
@@ -397,30 +403,6 @@ class WebApi:
         self._load_templates()
         self._log(f"xlsx 模板已更新：{new_name or doc.name} · {new_page_name}"
                   f"（{len(rows)}行 x {n_cols}列 · 数值列 {len(vc)} 个）")
-        return self.state
-
-    def delete_template_page(self, name: str, page_index: int) -> Dict[str, Any]:
-        """删除模板文档中的一页；最后一页删除即整文档删除。"""
-        if self.state["busy"]:
-            raise RuntimeError("识别进行中，无法修改模板")
-        doc = next((t for t in self._templates if t.name == name), None)
-        if doc is None:
-            raise RuntimeError(f"模板不存在：{name}")
-        pidx = int(page_index)
-        if not (0 <= pidx < len(doc.pages)):
-            raise RuntimeError("页码超出范围")
-        if len(doc.pages) == 1:
-            return self.delete_template(name)
-        gone = doc.pages.pop(pidx)
-        pv = self._templates_dir / f"{self._tpl_safe(name)}_{gone.page_name}.jpg"
-        if pv.is_file():
-            try:
-                pv.unlink()
-            except OSError:
-                pass
-        doc.save(self._templates_dir / f"{self._tpl_safe(name)}.json")
-        self._load_templates()
-        self._log(f"已删除模板页：{name} · {gone.page_name}")
         return self.state
 
     def set_all_templates(self, name: str) -> Dict[str, Any]:
@@ -692,6 +674,17 @@ class WebApi:
                          name="text-ocr").start()
         return True
 
+    def reload_templates(self) -> Dict[str, Any]:
+        """重新扫描模板目录（手动放入/替换 xlsx 后无需重启程序）。"""
+        if self.state["busy"]:
+            raise RuntimeError("识别进行中，无法重载模板")
+        n0 = len(self._templates)
+        self._load_templates()
+        n1 = len(self._templates)
+        self._log(f"模板目录已重扫：共 {n1} 个模板"
+                  + (f"（较之前 +{n1 - n0}）" if n1 > n0 else ""))
+        return self.state
+
     def set_page_fill_mode(self, index: int, mode: str) -> Dict[str, Any]:
         """设置某页的填充模式：vlookup=按科目对齐（默认）/ position=按位置强制。
 
@@ -769,6 +762,9 @@ class WebApi:
                     self._log("已取消识别")
                     break
                 self._store_page(idx, page)
+                if getattr(page, "geometry_saved", False):
+                    # 几何比例已写入模板文件：重载，使同批后续图片用上新几何
+                    self._load_templates()
                 info.update({
                     "status": "完成" if not page.error else "失败",
                     "mode": page.mode,
@@ -794,7 +790,9 @@ class WebApi:
             if not self._cancel.is_set():
                 done = sum(1 for i in self.state["images"] if i["status"] == "完成")
                 fail = sum(1 for i in self.state["images"] if i["status"] == "失败")
-                self.state["status"] = f"识别结束：成功 {done} 张，失败 {fail} 张"
+                self.state["status"] = (
+                    f"识别完成：成功 {done} 张" if fail == 0
+                    else f"识别结束：成功 {done} 张，失败 {fail} 张")
                 self._log(self.state["status"])
         except Exception as exc:  # noqa: BLE001
             self.state["status"] = f"发生错误：{exc}"
@@ -835,7 +833,10 @@ class WebApi:
         from .excel_writer import write_workbook
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M")
-        out = path or self._dialog_save_file(f"识别结果_{stamp}.xlsx", kind="xlsx")
+        # 默认目标路径 = 模板目录：导出的 Excel 可直接当模板
+        #（定义好命名区域后点模板库「重新扫描」即可）
+        out = path or self._dialog_save_file(f"识别结果_{stamp}.xlsx", kind="xlsx",
+                                             initialdir=str(self._templates_dir))
         if not out:
             return {"ok": False, "paths": [], "canceled": True}
         if not out.lower().endswith(".xlsx"):
@@ -854,6 +855,7 @@ class WebApi:
             self._log(f"已按模板填值导出：{out}")
             for c in checks[:5]:
                 self._log("勾稽提示：" + c)
+            self._maybe_register_template(out)
             return {"ok": True, "paths": [out], "canceled": False,
                     "checks": checks}
 
@@ -862,6 +864,7 @@ class WebApi:
                               "rows": pg.rows, "merges": pg.merges}
                              for pg in pages])
         self._log(f"已导出 Excel：{out}")
+        self._maybe_register_template(out)
         return {"ok": True, "paths": [out], "canceled": False}
 
     def export_word(self, path: str = "") -> Dict[str, Any]:
@@ -888,6 +891,18 @@ class WebApi:
                              for pg in pages])
         self._log(f"已导出 Word：{out}")
         return {"ok": True, "paths": [out], "canceled": False}
+
+    def _maybe_register_template(self, out: str) -> bool:
+        """导出文件落在模板目录时自动重扫，使其立即可作模板使用。"""
+        try:
+            if Path(out).resolve().parent == self._templates_dir.resolve():
+                self._load_templates()
+                self._log("导出文件在模板目录内，已自动重新扫描（可作模板使用；"
+                          "如需自定义数字/结构区域请在 Excel 名称管理器里定义）")
+                return True
+        except OSError:
+            pass
+        return False
 
     def open_path(self, path: str) -> bool:
         """用系统默认程序打开文件；打不开则退回其所在文件夹。"""
@@ -1088,20 +1103,23 @@ class WebApi:
         "json": ("JSON 文件 (*.json)", ".json", ("JSON 文件", "*.json")),
     }
 
-    def _dialog_save_file(self, default_name: str, kind: str = "xlsx") -> str:
+    def _dialog_save_file(self, default_name: str, kind: str = "xlsx",
+                          initialdir: str = "") -> str:
         flt, _ext, tk_ft = self._SAVE_KINDS.get(kind, self._SAVE_KINDS["xlsx"])
         if self._window is not None:
             try:
                 import webview
-                paths = self._window.create_file_dialog(
-                    webview.SAVE_DIALOG, save_filename=default_name, file_types=(flt,))
+                kw = {"save_filename": default_name, "file_types": (flt,)}
+                if initialdir:
+                    kw["directory"] = str(initialdir)
+                paths = self._window.create_file_dialog(webview.SAVE_DIALOG, **kw)
                 # pywebview 部分平台 SAVE_DIALOG 返回单元素 list/tuple 而非字符串
                 if isinstance(paths, (list, tuple)):
                     paths = paths[0] if paths else ""
                 return str(paths) if paths else ""
             except Exception:
                 pass
-        return _tk_save_file(default_name, tk_ft)
+        return _tk_save_file(default_name, tk_ft, initialdir=initialdir)
 
     # ------------------------------------------------------------------ #
     def _log(self, text: str, detail: bool = False) -> None:
@@ -1140,7 +1158,8 @@ def _tk_open_images() -> List[str]:
     return _TK.run(run)
 
 
-def _tk_save_file(default_name: str, tk_ft=("Excel 工作簿", "*.xlsx")) -> str:
+def _tk_save_file(default_name: str, tk_ft=("Excel 工作簿", "*.xlsx"),
+                  initialdir: str = "") -> str:
     def run():
         import tkinter as tk
         from tkinter import filedialog
@@ -1148,9 +1167,12 @@ def _tk_save_file(default_name: str, tk_ft=("Excel 工作簿", "*.xlsx")) -> str
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
+        kw = {}
+        if initialdir:
+            kw["initialdir"] = str(initialdir)
         path = filedialog.asksaveasfilename(
             title="导出", initialfile=default_name,
-            defaultextension=ext, filetypes=[tk_ft, ("所有文件", "*.*")])
+            defaultextension=ext, filetypes=[tk_ft, ("所有文件", "*.*")], **kw)
         root.destroy()
         return path or ""
     return _TK.run(run)

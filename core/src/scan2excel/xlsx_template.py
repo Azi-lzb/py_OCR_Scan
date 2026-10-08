@@ -117,6 +117,9 @@ class XlsxSheetPage:
     col_fracs: List[float] = field(default_factory=list)
     row_fracs: List[float] = field(default_factory=list)
 
+    # 命名区域信息（载入时填）：{"数字区域": [rect,...], ...}
+    named_ranges: Dict[str, List[Rect]] = field(default_factory=dict)
+
     @property
     def n_rows(self) -> int:
         return len(self.rows)
@@ -193,6 +196,8 @@ class XlsxTemplate:
     pages: List[XlsxSheetPage] = field(default_factory=list)
     # 校验表公式：[{"cell": "B2", "raw": "=数据!G8-SUM(数据!G3:G7)"}]
     check_formulas: List[Dict[str, str]] = field(default_factory=list)
+    # 命名区域是否由启发式推断（手搓且未定义区域）——载入时提示用户
+    inferred_regions: bool = False
 
     @property
     def rows(self) -> List[List[str]]:
@@ -223,10 +228,9 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
     num_by_sheet: Dict[str, Set[Cell]] = {}
     struct_by_sheet: Dict[str, Set[Cell]] = {}
     mid_by_sheet: Dict[str, Set[int]] = {}
-    for dn in wb.defined_names.values():
-        nm = dn.name or ""
-        refs = _parse_refs(dn.attr_text, "")
-        for sheet, rect in refs:
+
+    def _add_region(nm: str, default_sheet: str, attr_text: str) -> None:
+        for sheet, rect in _parse_refs(attr_text, default_sheet):
             if not sheet:
                 continue
             if _NUM_NAME.match(nm):
@@ -237,7 +241,30 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
                 mid_by_sheet.setdefault(sheet, set()).update(
                     range(rect[0], rect[2] + 1))
 
+    # ① 工作簿级命名区域（工具生成/Excel 里跨表定义）
+    for dn in wb.defined_names.values():
+        _add_region(dn.name or "", "", str(dn.attr_text or ""))
+    # ② 工作表级命名区域（用户在 Excel 里按单表作用域定义；名字可各表重复，
+    #    这对"一本 xlsx 多张表"的用法更自然）
+    for ws in wb.worksheets:
+        try:
+            sheet_defs = getattr(ws, "defined_names", None) or {}
+        except Exception:
+            sheet_defs = {}
+        for dn in list(sheet_defs.values()):
+            _add_region(dn.name or "", ws.title, str(dn.attr_text or ""))
+
+    # 每张表的命名区域明细（界面/校验共用同一事实来源）
+    ranges_by_sheet: Dict[str, Dict[str, List[Rect]]] = {}
+    for dn in wb.defined_names.values():
+        nm = dn.name or ""
+        for sheet, rect in _parse_refs(dn.attr_text, ""):
+            if not sheet:
+                continue
+            ranges_by_sheet.setdefault(sheet, {}).setdefault(nm, []).append(rect)
+
     tpl = XlsxTemplate(name=path.stem, path=path)
+    inferred = False
     for ws in wb.worksheets:
         if ws.title in (CHECK_SHEET, GEO_SHEET, BALANCE_SHEET):
             continue
@@ -261,7 +288,8 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
         struct = {c for c in struct_by_sheet.get(ws.title, set())
                   if c[0] < len(rows)}
         if not num:
-            # 手工制作的 xlsx 未写命名区域：启发式推断数字区
+            # 手工制作的 xlsx 未写命名区域：启发式推断数字区（并标记）
+            inferred = True
             hr = 0
             for r in rows[:4]:
                 if any(_looks_numeric(v) for v in r):
@@ -269,14 +297,20 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
                 hr += 1
             mid_rows = set()
             for r in range(hr, len(rows)):
-                row = rows[r]
-                head = "".join(row)
+                head = "".join(rows[r])
                 if "科目代码" in head and "科目名称" in head:
                     mid_rows.add(r)
+                    mid_rows.add(r + 1)      # 段内子表头行（借/贷 或 收/付）
             num = {(r, c) for r in range(len(rows))
                    for c in range(n_cols)
                    if r >= hr and r not in mid_rows
                    and c >= 2 and _looks_numeric(rows[r][c])}
+            if not num:
+                # 启发式第二档：数字尚未填的空白模板——取数据区除前两列
+                # 与末列（常见为重复的代码列）之外的格
+                num = {(r, c) for r in range(hr, len(rows))
+                       for c in range(2, max(2, n_cols - 1))
+                       if r not in mid_rows}
         merges: List[List[int]] = []
         for mr in ws.merged_cells.ranges:
             c0, r0, c1, r1 = mr.min_col, mr.min_row, mr.max_col, mr.max_row
@@ -284,8 +318,10 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
                 merges.append([r0 - 1, c0 - 1, r1 - r0 + 1, c1 - c0 + 1])
         tpl.pages.append(XlsxSheetPage(
             page_name=ws.title, rows=rows, num_cells=num,
-            struct_cells=struct, mid_rows=set(mid), merges=merges))
+            struct_cells=struct, mid_rows=set(mid), merges=merges,
+            named_ranges=ranges_by_sheet.get(ws.title, {})))
 
+    tpl.inferred_regions = inferred
     if CHECK_SHEET in wb.sheetnames:
         ws = wb[CHECK_SHEET]
         for row in ws.iter_rows():
@@ -412,8 +448,7 @@ def save_sheet_to_workbook(path: Path, sheet_name: str, rows: List[List[str]],
 
     add_name("数字区域", num_cells)
     add_name("结构区域", struct_cells)
-    if mid_rows:
-        add_name("中缝表头", {(r, 0) for r in mid_rows} | {(r, 1) for r in mid_rows})
+    # 段内表头（中缝）行已包含在"结构区域"中，不再单独建区域
 
     wb.save(path)
     wb.close()
@@ -620,17 +655,56 @@ def _key_code(t: str) -> str:
 
 
 def _key_match(a: str, b: str) -> bool:
-    """科目键匹配（代码优先、容忍零星误读）。"""
-    a, b = _key_code(a), _key_code(b)
-    if not a or not b:
+    """科目键匹配（包含式，容忍 OCR 把前两列粘成一格）。
+
+    OCR 常把"170"与"中央预算支出"识别进同一格（要么代码格含名称，
+    要么名称格含代码）。这里对纯代码做子串判定：短代码是长串的子串
+    且长度差不过分，即视为同一行（"170" ∈ "170中央预算支出" ✓）。
+    """
+    ra, rb = _key_code(a), _key_code(b)
+    if not ra or not rb:
         return False
-    if a == b:
+    if ra == rb:
         return True
-    if abs(len(a) - len(b)) > 1:
+    # 纯数字代码：子串匹配（要求至少 3 位，避免 "1" 命中一切）
+    da = "".join(ch for ch in ra if ch.isdigit())
+    db = "".join(ch for ch in rb if ch.isdigit())
+    if da and db:
+        if len(da) >= 3 and da in db and len(db) - len(da) <= len(db) * 0.6:
+            return True
+        if len(db) >= 3 and db in da and len(da) - len(db) <= len(da) * 0.6:
+            return True
+    # 宽松近似（容忍零星误读）
+    if abs(len(ra) - len(rb)) > 1:
         return False
-    n = min(len(a), len(b))
-    same = sum(1 for i in range(n) if a[i] == b[i])
-    return same / max(len(a), len(b)) >= 0.75
+    n = min(len(ra), len(rb))
+    same = sum(1 for i in range(n) if ra[i] == rb[i])
+    return same / max(len(ra), len(rb)) >= 0.75
+
+
+def _row_key_match(tpl_code: str, tpl_name: str,
+                   ocr_code: str, ocr_name: str) -> bool:
+    """整行键匹配：代码包含式命中，或名称互相包含，或代码+名称合起来命中。
+
+    针对 OCR 把"170 中央预算支出"粘进一格的情况：
+      · 模板代码 "170" 出现在 OCR 文本里，且模板名称也出现在 OCR 文本里 → 命中
+      · 或名称互相包含（中央预算支出 ∈ "170中央预算支出"）
+    """
+    combined = f"{ocr_code}{ocr_name}"
+    # ① 代码对"整行文本"的包含式命中（170 ∈ "170中央预算支出"）
+    if tpl_code and _key_match(tpl_code, combined):
+        if tpl_code in combined or len(_key_code(tpl_code)) >= 3:
+            return True
+    # ② 名称对"整行文本"的包含式命中（中央预算支出 ∈ "170中央预算支出"）
+    if tpl_name and len(tpl_name) >= 3 and (
+            tpl_name in combined or combined in tpl_name):
+        return True
+    # ③ 常规分列匹配（代码/名称各在其列）
+    if _key_match(tpl_code, ocr_code):
+        return True
+    if tpl_name and _match_text(tpl_name, ocr_name):
+        return True
+    return False
 
 
 def build_row_mapping(tpl_page: XlsxSheetPage,
@@ -644,9 +718,12 @@ def build_row_mapping(tpl_page: XlsxSheetPage,
       extra_geo   [(几何行, 代码)]         照片里多出的行
     合计行等空代码行不参与匹配（由调用方按邻近行偏移对齐）。
     """
+    num_rows = {r for (r, _c) in tpl_page.num_cells}
     tpl_rows = []
     for r in range(tpl_page.n_rows):
-        if r < tpl_page.header_rows or r in tpl_page.mid_rows:
+        # 数据行 = "数字区域"覆盖的行；段内表头（科目代码/科目名称行、
+        # 中缝表头）没有数字格，自动排除，不依赖单独的中缝区域
+        if r < tpl_page.header_rows or (num_rows and r not in num_rows):
             continue
         code = str(tpl_page.rows[r][0] if tpl_page.rows[r] else "").strip()
         name = str(tpl_page.rows[r][1] if len(tpl_page.rows[r]) > 1 else "").strip()
@@ -655,13 +732,13 @@ def build_row_mapping(tpl_page: XlsxSheetPage,
 
     used_geo = set()
     row_map: Dict[int, int] = {}
-    # 第一轮：代码精确/模糊匹配
+    # 第一轮：整行键匹配（含"170中央预算支出"粘格场景）
     for (tr, code, name) in tpl_rows:
         for gr in sorted(geo_keys):
             if gr in used_geo:
                 continue
             gcode, gname = geo_keys[gr]
-            if _key_match(code, gcode):
+            if _row_key_match(code, name, gcode, gname):
                 row_map[tr] = gr
                 used_geo.add(gr)
                 break
@@ -680,17 +757,27 @@ def build_row_mapping(tpl_page: XlsxSheetPage,
     unmatched_tpl = [(tr, code, name) for (tr, code, name) in tpl_rows
                      if tr not in row_map]
     extra_geo = []
+    tpl_codes = [c for (_r, c, _n) in tpl_rows]
     for gr in sorted(geo_keys):
         if gr in used_geo:
             continue
         gcode, gname = geo_keys[gr]
+        # 段内表头行（科目代码/科目名称）不是数据行
+        if ("科目代码" in (gcode or "") or "科目名称" in (gname or "")
+                or "科目名称" in (gcode or "") or "科目代码" in (gname or "")):
+            continue
         # 合计行（代码空/名称含"合计"）由邻近偏移对齐，不算"多出的行"
         if "合计" in (gname or "") or "合计" in (gcode or ""):
             continue
         if not _key_code(gcode) and not (gname or "").strip():
             continue
-        if _key_code(gcode):
-            extra_geo.append((gr, gcode))
+        if not _key_code(gcode):
+            continue
+        # 该代码在模板里已存在（说明是照片底部多检出的细行/重复行，
+        # 文字与相邻行重复），不算"模板未包含"
+        if any(_key_match(tc, gcode) for tc in tpl_codes):
+            continue
+        extra_geo.append((gr, gcode))
     return row_map, unmatched_tpl, extra_geo
 
 
@@ -811,37 +898,32 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
                     f"按位置强制填充：{len(unmatched_tpl)} 行科目对不上、"
                     f"{len(extra_geo)} 行照片多出，数值可能填错行，请重点核对")
 
-    # ---- 填值（按 row_map 从对应几何行取数）----
-    for tr in range(n_rows):
-        if tr < tpl_page.header_rows or tr in tpl_page.mid_rows:
+    # ---- 填值：以"数字区域"为唯一依据逐格填 ----
+    # 数字区域之外的格（表头/中缝表头/合计标签等冻结文本）永不覆盖。
+    for (tr, tc) in sorted(tpl_page.num_cells):
+        if tr >= len(out_rows) or tc >= len(out_rows[tr]):
             continue
         gr = row_map.get(tr)
         if gr is None:
-            # 未匹配：清空该行数值（保留模板冻结文本），避免位置猜测
-            for c in tpl_page.value_cols:
-                if c < len(out_rows[tr]):
-                    out_rows[tr][c] = ""
+            out_rows[tr][tc] = ""    # 未匹配行：留空，不按位置猜
             continue
-        for c in tpl_page.value_cols:
-            if (gr, c) not in tpl_page.num_cells and fill_mode == "vlookup":
-                pass
-            text, score = cell_text(gr, c)
-            if c >= len(out_rows[tr]):
-                continue
-            out_rows[tr][c] = text
-            if text:
-                page.scores[f"{tr},{c}"] = score
-                page.min_score = min(page.min_score, score)
+        text, score = cell_text(gr, tc)
+        out_rows[tr][tc] = text
+        if text:
+            page.scores[f"{tr},{tc}"] = score
+            page.min_score = min(page.min_score, score)
 
     # 覆盖预览：数字区绿框（高亮实际取数的几何格）
     import cv2
     overlay = structure.image.copy()
-    for tr, gr in row_map.items():
-        for c in tpl_page.value_cols:
-            box = cells.get((gr, c))
-            if box is not None:
-                x, y, w, h = box
-                cv2.rectangle(overlay, (x, y), (x + w, y + h), (80, 200, 80), 2)
+    for (tr, tc) in sorted(tpl_page.num_cells):
+        gr = row_map.get(tr)
+        if gr is None:
+            continue
+        box = cells.get((gr, tc))
+        if box is not None:
+            x, y, w, h = box
+            cv2.rectangle(overlay, (x, y), (x + w, y + h), (80, 200, 80), 2)
 
     page.mode = "table"
     page.borderless = False
@@ -896,6 +978,42 @@ def fill_template_workbook(tpl_path: Path, sheet_fills: Dict[str, object],
                     continue
     wb.save(Path(out_path))
     wb.close()
+
+
+def capture_geometry(path: Path, sheet_name: str,
+                     xs: List[int], ys: List[int]) -> bool:
+    """把一次成功匹配的检测网格折算为比例，写入隐藏"几何"表。
+
+    手搓的 xlsx 模板没有几何信息，匹配只能要求"照片网格与模板尺寸严格
+    一致"；首次成功套用后自动回写几何比例，之后拍摄规格略有差异也能稳定
+    套用（外框+比例+文字锚点）。文件被 Excel 占用等异常时静默返回 False。
+    """
+    try:
+        if len(xs) < 2 or len(ys) < 2:
+            return False
+        path = Path(path)
+        wb = load_workbook(path, data_only=False)
+        if GEO_SHEET not in wb.sheetnames:
+            ws = wb.create_sheet(GEO_SHEET)
+            ws.sheet_state = "veryHidden"
+        else:
+            ws = wb[GEO_SHEET]
+        try:
+            geo = json.loads(str(ws["A1"].value or "{}"))
+        except Exception:
+            geo = {}
+        w = max(1, xs[-1] - xs[0])
+        h = max(1, ys[-1] - ys[0])
+        geo[sheet_name] = {
+            "col_fracs": [round((x - xs[0]) / w, 5) for x in xs],
+            "row_fracs": [round((y - ys[0]) / h, 5) for y in ys],
+        }
+        ws["A1"] = json.dumps(geo, ensure_ascii=False)
+        wb.save(path)
+        wb.close()
+        return True
+    except Exception:
+        return False
 
 
 def _instantiate_cf(formula: str, arow: int, acol: int, r: int, c: int) -> str:

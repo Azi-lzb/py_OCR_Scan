@@ -9,8 +9,10 @@ from pathlib import Path
 
 def resolve_paths() -> Path:
     if getattr(sys, "frozen", False):
-        # 打包态：scan2excel 包与前端页面已内嵌进 exe，无需外部 core/
-        return Path(sys.executable).resolve().parent
+        # 打包态：scan2excel 包与前端页面已内嵌进 exe；
+        # 运行时数据（模板等）优先放 exe 旁的 core\，否则放 exe 自身目录
+        here = Path(sys.executable).resolve().parent
+        return here / "core" if (here / "core").is_dir() else here
     root = Path(__file__).resolve().parent
     core = root / "core"
     if not (core / "src" / "scan2excel").is_dir():
