@@ -169,9 +169,15 @@ class WebApi:
         return self.state
 
     def set_page_template(self, index: int, name: str) -> Dict[str, Any]:
-        """给某页指定模板（重新识别时强制套用）。"""
+        """给某页指定模板：""=跟随自动匹配，"__none__"=本页不使用，其余=模板名。"""
         if 0 <= index < len(self.state["images"]):
-            self.state["images"][index]["template_name"] = str(name or "")
+            name = str(name or "")
+            if name and name != "__none__" and                     not any(t.name == name for t in self._templates):
+                name = ""
+            self.state["images"][index]["template_name"] = name
+            if name:
+                self._log(f"已为「{self.state['images'][index]['name']}」指定模板："
+                          + ("不使用" if name == "__none__" else name))
         return self.state
 
     def get_thumb(self, index: int) -> str:
@@ -381,6 +387,24 @@ class WebApi:
                          name="text-ocr").start()
         return True
 
+    def reprocess_page(self, index: int = -1) -> bool:
+        """重新识别指定页（默认当前页）。
+
+        套用模板指定、忽略区域、精度档的最新设置——用于：改模板、画完
+        忽略区域、切换精度档后重跑单页。"""
+        if self.state["busy"]:
+            return False
+        idx = index if 0 <= index < len(self.state["images"]) else self.state["current"]
+        if not (0 <= idx < len(self.state["images"])):
+            return False
+        self._cancel.clear()
+        self.state["busy"] = True
+        self.state["status"] = "正在重新识别，请稍候……"
+        self._log(f"重新识别：{self.state['images'][idx]['name']}")
+        threading.Thread(target=self._worker, args=([idx], False), daemon=True,
+                         name="ocr-reprocess").start()
+        return True
+
     def cancel_ocr(self) -> bool:
         if self.state["busy"]:
             self._cancel.set()
@@ -401,6 +425,15 @@ class WebApi:
                 def on_step(text: str, _info=info) -> None:
                     self._log(text, detail=True)
 
+                # 模板解析：显式指定 > 全局自动开关；"__none__" = 本页不用模板
+                tname = str(info.get("template_name") or "")
+                if tname == "__none__":
+                    tpl_list, tname = None, ""
+                elif tname:
+                    tpl_list = list(self._templates)
+                else:
+                    tpl_list = (list(self._templates)
+                                if self.state.get("template_auto") else None)
                 try:
                     page = service.process_image(
                         info["path"], on_step=on_step,
@@ -408,9 +441,8 @@ class WebApi:
                         force_text=force_text,
                         server_rec=bool(self.state.get("high_accuracy")),
                         ignore_regions=info.get("ignore_regions") or [],
-                        templates=(self._templates
-                                   if self.state.get("template_auto") else None),
-                        template_name=info.get("template_name", ""))
+                        templates=tpl_list,
+                        template_name=tname)
                 except Exception:  # process_image 只在"用户取消"时向外抛
                     info["status"] = "等待"
                     self._log("已取消识别")

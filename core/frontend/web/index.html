@@ -341,6 +341,9 @@ table.grid td.lowconf.typewarn{background:var(--danger-soft);}
 #tableEmpty{padding:26px; color:var(--text-3); text-align:center;}
 
 /* ---------- 导出下拉（reset-menu 同款） ---------- */
+.tpl-pick{display:inline-flex; align-items:center; gap:6px;}
+.tpl-pick-label{font-size:12.5px; color:var(--text-2); font-weight:600;}
+.tpl-pick .gen-select{width:150px; padding:6px 8px; font-size:12.5px;}
 .menu{position:relative;}
 .menu-list{
   position:absolute; right:0; top:calc(100% + 4px); background:var(--surface);
@@ -424,6 +427,13 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
     <button id="btnText" class="btn" disabled title="把当前页强制按整页文字识别（表格页也能提纯文字）">识别文字</button>
     <button id="btnCancel" class="btn" disabled>取消</button>
     <button id="btnSaveTpl" class="btn" disabled title="把当前页（已校对内容）保存为月计表模板，以后每月套用该模板只识别数值">存为模板</button>
+    <span class="tpl-pick" title="为当前页选择识别模板：自动匹配=按科目代码命中率自动选；指定某模板=强制套用；不使用=按通用识别">
+      <span class="tpl-pick-label">模板</span>
+      <select id="selPageTpl" class="gen-select">
+        <option value="">自动匹配</option>
+        <option value="__none__">不使用模板</option>
+      </select>
+    </span>
     <span class="spacer"></span>
     <span class="menu" id="menuExport">
       <button id="btnExport" class="btn" disabled>导出 ▾</button>
@@ -452,6 +462,7 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
         </div>
         <button id="btnIgnore" class="btn tiny" title="在预览图上拖拽框选不需要识别的区域（页眉/水印/印章），重新识别后生效">框选忽略区域</button>
         <button id="btnIgClear" class="btn tiny" disabled>清空忽略区</button>
+        <button id="btnReprocess" class="btn tiny" disabled title="按当前设置（模板/忽略区域/精度档）重新识别这一页">重新识别</button>
         <span class="hint" id="previewHint">叠加图可用于确认表格切分是否正确</span>
       </div>
       <div id="previewBox"><div id="previewMedia"><span class="ph">选择照片后此处显示预览</span></div><div id="regLayer"></div><div id="linkLayer"></div><div id="drawRect"></div></div>
@@ -699,6 +710,30 @@ function initTemplateUI(){
       S = st; render();
     });
   });
+  // 当前页模板选择：已识别过的页立即按新模板重识别
+  $("selPageTpl").addEventListener("change", function(){
+    var val = $("selPageTpl").value;
+    var idx = S.current;
+    api("set_page_template", idx, val).then(function(st){
+      S = st; render();
+      var im = (idx >= 0 && S.images[idx]) || null;
+      var hint = val === "__none__" ? "本页不使用模板" : (val ? "已指定模板：" + val : "已恢复自动匹配");
+      if(im && (im.status === "完成" || im.status === "失败")){
+        api("reprocess_page", idx).then(function(){ poll(); });
+        toast(hint + "，正在重新识别…");
+      } else {
+        toast(hint + "，开始识别时生效");
+      }
+    }).catch(function(e){ toast(e.message||String(e), "err"); });
+  });
+  // 重新识别当前页
+  $("btnReprocess").addEventListener("click", function(){
+    api("reprocess_page", S.current).then(function(ok){
+      if(!ok) toast("请先选择一张照片");
+      else toast("正在重新识别…");
+      poll();
+    }).catch(function(e){ toast(e.message||String(e), "err"); });
+  });
 }
 
 /* ================= 状态渲染 ================= */
@@ -721,6 +756,24 @@ function render(){
   if(!S) return;
   renderBadge(); renderList(); renderButtons(); renderLog();
   renderTable(); renderPreview(); syncEngineSetting(); syncTemplatePanel();
+  syncPageTemplateUI();
+}
+
+/* 当前页模板选择器同步 */
+function syncPageTemplateUI(){
+  var sel = $("selPageTpl");
+  if(!sel) return;
+  var names = S.templates || [];
+  var key = names.join("|");
+  if(sel.dataset.key !== key){
+    var opts = '<option value="">自动匹配</option><option value="__none__">不使用模板</option>';
+    names.forEach(function(n){ opts += '<option value="'+esc(n)+'">'+esc(n)+'</option>'; });
+    sel.innerHTML = opts;
+    sel.dataset.key = key;
+  }
+  var cur = (S.current >= 0 && S.images[S.current]) || null;
+  var want = (cur && cur.template_name) || "";
+  if(sel.value !== want && document.activeElement !== sel) sel.value = want;
 }
 
 /* 设置页：模板面板同步 */
@@ -832,6 +885,8 @@ function renderButtons(){
   $("btnText").disabled = S.busy || !cur;
   var ir = cur ? (S.images[S.current].ignore_regions||[]).length : 0;
   $("btnIgClear").disabled = S.busy || !ir;
+  $("btnReprocess").disabled = S.busy || !cur;
+  $("selPageTpl").disabled = S.busy || !cur;
   $("btnIgnore").disabled = S.busy || !cur;
   $("btnIgnore").className = "btn tiny" + (drawMode ? " toggle-on" : "");
 }

@@ -20,3 +20,4 @@
 /tests/data/**/*.xlsx
 /tests/**/_diag/
 /data/templates/
+/core/data/templates/
