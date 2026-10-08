@@ -421,6 +421,7 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
   <div class="page-actions">
     <button id="btnChoose" class="btn">选择照片/PDF…</button>
     <button id="btnStart" class="btn primary" disabled>开始识别</button>
+    <button id="btnText" class="btn" disabled title="把当前页强制按整页文字识别（表格页也能提纯文字）">识别文字</button>
     <button id="btnCancel" class="btn" disabled>取消</button>
     <span class="spacer"></span>
     <span class="menu" id="menuExport">
@@ -433,13 +434,6 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
         <button data-fmt="txt">TXT 文本（全部页）</button>
         <button data-fmt="md">Markdown（全部页）</button>
         <button data-fmt="json">JSON（全部页）</button>
-      </div>
-    </span>
-    <span class="menu" id="menuTools">
-      <button id="btnTools" class="btn">工具 ▾</button>
-      <div class="menu-list">
-        <button id="btnText" disabled>识别文字（当前页）</button>
-        <button id="btnHi" title="server 模型，更准更慢；模型已随程序内置，离线可用">高精度识别</button>
       </div>
     </span>
   </div>
@@ -767,8 +761,6 @@ function renderButtons(){
   $("btnExport").disabled = S.busy || !hasDone;
   $("btnCopy").disabled = S.busy || !S.has_result;
   $("btnText").disabled = S.busy || !cur;
-  $("btnHi").disabled = S.busy;
-  $("btnHi").textContent = (S.high_accuracy ? "✓ " : "") + "高精度识别";
   var ir = cur ? (S.images[S.current].ignore_regions||[]).length : 0;
   $("btnIgClear").disabled = S.busy || !ir;
   $("btnIgnore").disabled = S.busy || !cur;
@@ -1287,14 +1279,7 @@ Array.prototype.forEach.call(document.querySelectorAll(".menu-list [data-fmt]"),
       .catch(function(e){ toast(e.message||String(e), "err"); });
   });
 });
-$("btnHi").addEventListener("click", function(){
-  var target = !S.high_accuracy;
-  api("set_high_accuracy", target).then(function(st){
-    S = st; render();
-    if(target && st.busy) toast("正在下载高精度模型（本程序未内置时的兜底，约 85MB）…");
-    else toast(target ? "已切换到高精度档" : "已切换到标准档", "ok");
-  }).catch(function(e){ toast(e.message||String(e), "err"); });
-});
+
 
 function esc(s){
   return String(s==null?"":s).replace(/[&<>"']/g, function(ch){
