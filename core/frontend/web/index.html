@@ -168,6 +168,30 @@ header .spacer{flex:1;}
 .settings-wrap{flex:1; min-height:0; overflow:auto; padding:18px 22px;}
 .settings-col{max-width:760px;}
 #page-settings .gen-card{margin-bottom:14px;}
+
+/* ---------- 模板库 ---------- */
+#page-templates{flex-direction:row; min-height:0;}
+.tpl-lib-side{flex:none; width:232px; border-right:1px solid var(--border); background:var(--sidebar); display:flex; flex-direction:column; min-height:0;}
+.tpl-lib-side .side-head{padding:14px 16px 6px; font-size:12px; font-weight:700; color:var(--text-3); letter-spacing:.4px;}
+.tpl-lib-list{flex:1; overflow-y:auto; padding:0 8px 8px; min-height:0;}
+.tpl-lib-hint-box{padding:10px 14px; margin:0 8px 10px; font-size:11.5px; color:var(--text-3); line-height:1.7; border-top:1px solid var(--border);}
+.tpl-lib-main{flex:1; min-width:0; min-height:0; overflow:auto; padding:14px 16px; display:flex; flex-direction:column; gap:10px;}
+.tpl-lib-bar{display:flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:10px 14px; box-shadow:var(--shadow-card); flex-wrap:wrap;}
+.tpl-lib-meta{font-size:12px; color:var(--text-3);}
+.gen-input{padding:6px 10px; border:1px solid var(--border-strong); border-radius:var(--radius-sm); font:inherit; font-size:12.5px; color:var(--text); background:var(--surface);}
+.gen-input:focus{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-ring); outline:none;}
+.tpl-lib-cols{display:flex; align-items:center; gap:8px 10px; flex-wrap:wrap; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:9px 14px; font-size:12.5px;}
+.tpl-col-chip{display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border:1px solid var(--border); border-radius:999px; background:var(--surface-2); color:var(--text-2); cursor:pointer; font-size:12px; user-select:none;}
+.tpl-col-chip:hover{border-color:var(--accent-border-strong);}
+.tpl-col-chip input{accent-color:var(--accent); cursor:pointer;}
+.tpl-lib-note{color:var(--text-3); font-size:11.5px; line-height:1.6;}
+.tpl-lib-tablewrap{background:var(--img-bg); border:1px solid var(--border); border-radius:12px; overflow:auto; max-height:44vh;}
+table.tpl-grid td{min-width:76px;}
+table.tpl-grid td.tpl-valcell{background:var(--surface-2); color:var(--text-3); font-style:italic;}
+table.tpl-grid td.tpl-valcell:focus{font-style:normal; color:var(--text);}
+.tpl-lib-preview{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:10px 14px;}
+.tpl-lib-preview img{max-width:100%; max-height:320px; border:1px solid var(--border); border-radius:8px; display:block; margin-top:6px;}
+.tpl-doc-icon{flex:none; width:32px; height:32px; border-radius:8px; display:grid; place-items:center; background:var(--accent-soft); color:var(--accent); font-size:15px;}
 #page-settings .gen-select{width:220px;}
 #page-settings .gen-row{min-height:56px; padding:12px 20px;}
 .engine-status{font-size:11.5px; color:var(--text-3); margin-right:10px;}
@@ -416,6 +440,7 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
   <span class="badge" id="badge">就绪</span>
   <nav class="nav-tabs">
     <button type="button" class="tab-btn active" data-page="ocr" title="拍照/扫描表格与文字识别">OCR识别</button>
+    <button type="button" class="tab-btn" data-page="templates" title="月计表模板库：查看、细调、删除模板">模板库</button>
     <button type="button" class="tab-btn" data-page="settings" title="外观与识别引擎设置">设置</button>
   </nav>
   <span class="spacer"></span>
@@ -544,12 +569,8 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
         </div>
         <div class="gen-row">
           <div class="gen-row-left">
-            <div class="gen-row-name">已保存模板</div>
-            <div class="gen-row-desc" id="tplList">尚未保存模板</div>
-          </div>
-          <div class="gen-row-right">
-            <select id="selTplDel" class="gen-select"><option value="">（无）</option></select>
-            <button id="btnTplDel" class="btn tiny" style="margin-left:8px">删除</button>
+            <div class="gen-row-name">模板管理</div>
+            <div class="gen-row-desc" id="tplList">查看、细调、删除请前往顶部「模板库」页；新模板在 OCR 识别页校对后点「存为模板」生成。</div>
           </div>
         </div>
       </div>
@@ -564,6 +585,14 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
       </div>
     </div>
   </div>
+</section>
+<section id="page-templates" class="page">
+  <div class="tpl-lib-side">
+    <div class="side-head">模板库</div>
+    <div class="tpl-lib-list" id="tplLibList"></div>
+    <div class="tpl-lib-hint-box">新模板：在「OCR识别」页校对好一页后，点操作条「存为模板」。<br>模板冻结行列与科目文本，每月只 OCR 数值格。</div>
+  </div>
+  <div class="tpl-lib-main" id="tplLibEditor"></div>
 </section>
 <div id="logPane">
   <button id="logToggle"><span class="arr">▸</span><span id="logLast">日志</span></button>
@@ -653,8 +682,10 @@ function applyAccent(name){
         x.classList.toggle("active", x === b);
       });
       var name = b.dataset.page;
-      $("page-ocr").classList.toggle("active", name === "ocr");
-      $("page-settings").classList.toggle("active", name === "settings");
+      Array.prototype.forEach.call(document.querySelectorAll(".page"), function(pg){
+        pg.classList.toggle("active", pg.id === "page-" + name);
+      });
+      if(name === "templates") openTemplateLib();
     });
   });
 })();
@@ -696,15 +727,6 @@ function initTemplateUI(){
       toast("模板已保存：" + name, "ok");
     }).catch(function(e){ toast(e.message||String(e), "err"); });
   });
-  $("btnTplDel").addEventListener("click", function(){
-    var name = $("selTplDel").value;
-    if(!name) return;
-    if(!confirm("删除模板「" + name + "」？")) return;
-    api("delete_template", name).then(function(st){
-      S = st; render();
-      toast("已删除模板：" + name);
-    }).catch(function(e){ toast(e.message||String(e), "err"); });
-  });
   $("selTplAuto").addEventListener("change", function(){
     api("set_template_auto", $("selTplAuto").value === "on").then(function(st){
       S = st; render();
@@ -734,6 +756,140 @@ function initTemplateUI(){
       poll();
     }).catch(function(e){ toast(e.message||String(e), "err"); });
   });
+}
+
+/* ================= 模板库（查看 / 细调 / 删除） ================= */
+var tplLibCurrent = "";
+var tplLibDetail = null;
+
+function openTemplateLib(){
+  var names = S ? (S.templates || []) : [];
+  if(!tplLibCurrent || names.indexOf(tplLibCurrent) < 0){
+    tplLibCurrent = names.length ? names[0] : "";
+  }
+  renderTplLibList();
+  if(tplLibCurrent) loadTplDetail(tplLibCurrent);
+  else { tplLibDetail = null; renderTplLibEditor(); }
+}
+
+function renderTplLibList(){
+  var box = $("tplLibList");
+  if(!box) return;
+  var names = (S && S.templates) || [];
+  if(!names.length){
+    box.innerHTML = '<div class="side-empty">还没有模板<br>去「OCR识别」页校对一页后<br>点「存为模板」生成</div>';
+    return;
+  }
+  box.innerHTML = names.map(function(n){
+    return '<div class="img-item'+(n===tplLibCurrent?' active':'')+'" data-tpl="'+esc(n)+'">'
+      + '<span class="tpl-doc-icon">▤</span>'
+      + '<div class="meta"><div class="nm" title="'+esc(n)+'">'+esc(n)+'</div></div></div>';
+  }).join("");
+  Array.prototype.forEach.call(box.querySelectorAll("[data-tpl]"), function(el){
+    el.addEventListener("click", function(){
+      tplLibCurrent = el.getAttribute("data-tpl");
+      renderTplLibList();
+      loadTplDetail(tplLibCurrent);
+    });
+  });
+}
+
+function loadTplDetail(name){
+  api("get_template_detail", name).then(function(d){
+    tplLibDetail = d;
+    renderTplLibEditor();
+  }).catch(function(e){ toast(e.message||String(e), "err"); });
+}
+
+function renderTplLibEditor(){
+  var pane = $("tplLibEditor");
+  if(!pane) return;
+  if(!tplLibDetail){
+    pane.innerHTML = '<div class="side-empty" style="margin:auto;padding:60px 20px">'
+      + (((S && S.templates) || []).length ? "选择左侧模板查看与细调" : "尚未保存模板：在「OCR识别」页校对后点「存为模板」") + '</div>';
+    return;
+  }
+  var d = tplLibDetail;
+  var nR = d.rows.length, nC = nR ? d.rows[0].length : 0;
+  var vcSet = {};
+  (d.value_cols || []).forEach(function(c){ vcSet[c] = 1; });
+  var html = '<div class="tpl-lib-bar">'
+    + '<span class="tpl-pick-label">模板名</span>'
+    + '<input id="tplNameIn" class="gen-input" style="width:230px" value="'+esc(d.name)+'">'
+    + '<span class="tpl-lib-meta">'+nR+' 行 × '+nC+' 列 · 数值列 '+(d.value_cols||[]).length+' 个</span>'
+    + '<span style="flex:1"></span>'
+    + '<button id="tplSaveBtn" class="btn primary tiny">保存修改</button>'
+    + '<button id="tplDelBtn" class="btn danger tiny">删除模板</button>'
+    + '</div>';
+  html += '<div class="tpl-lib-cols"><span class="tpl-pick-label">表头行数</span>'
+    + '<input id="tplHeaderIn" type="number" class="gen-input" style="width:70px" min="0" max="'+Math.max(0,nR-1)+'" value="'+(d.header_rows||0)+'">'
+    + '<span class="tpl-lib-note">前 N 行整行冻结、不参与 OCR</span></div>';
+  html += '<div class="tpl-lib-cols"><span class="tpl-pick-label">数值列（每月 OCR）</span>';
+  for(var c=0;c<nC;c++){
+    var head = "";
+    for(var r=0;r<Math.max(1, d.header_rows||0);r++){
+      if(d.rows[r] && d.rows[r][c]) head = d.rows[r][c];
+    }
+    html += '<label class="tpl-col-chip"><input type="checkbox" data-col="'+c+'"'+(vcSet[c]?' checked':'')+'>'
+      + esc(head || ("列"+(c+1))) + '</label>';
+  }
+  html += '<span class="tpl-lib-note" style="margin-left:auto">灰斜体格=每月覆盖的数值位 · 白格=冻结文本（点击即可编辑修正）</span></div>';
+  html += '<div class="tpl-lib-tablewrap"><table class="grid tpl-grid"><tbody>';
+  for(var r2=0;r2<nR;r2++){
+    html += '<tr'+(r2 < (d.header_rows||0) ? ' class="head"' : '')+'>';
+    for(var c2=0;c2<nC;c2++){
+      var v = (d.rows[r2] && d.rows[r2][c2]) || "";
+      var isVal = vcSet[c2] && r2 >= (d.header_rows||0);
+      html += '<td data-r="'+r2+'" data-c="'+c2+'"'+(isVal?' class="tpl-valcell"':'')+' contenteditable="true">'+esc(v)+'</td>';
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table></div>';
+  if(d.preview){
+    html += '<div class="tpl-lib-preview"><span class="tpl-pick-label">基准页预览</span>'
+      + '<img src="'+d.preview+'" alt="preview"></div>';
+  }
+  pane.innerHTML = html;
+  $("tplSaveBtn").addEventListener("click", saveTplDetail);
+  $("tplDelBtn").addEventListener("click", function(){
+    if(!confirm("删除模板「"+d.name+"」？此操作不可撤销。")) return;
+    api("delete_template", d.name).then(function(st){
+      S = st;
+      tplLibCurrent = ""; tplLibDetail = null;
+      render(); openTemplateLib();
+      toast("已删除模板：" + d.name);
+    }).catch(function(e){ toast(e.message||String(e), "err"); });
+  });
+}
+
+function saveTplDetail(){
+  if(!tplLibDetail) return;
+  var rows = [];
+  Array.prototype.forEach.call(document.querySelectorAll("#tplLibEditor .tpl-grid tr"), function(tr){
+    var arr = [];
+    Array.prototype.forEach.call(tr.querySelectorAll("td"), function(td){
+      arr.push(td.innerText.replace(/ /g," ").trim());
+    });
+    rows.push(arr);
+  });
+  var vc = [];
+  Array.prototype.forEach.call(document.querySelectorAll("#tplLibEditor input[data-col]"), function(cb){
+    if(cb.checked) vc.push(parseInt(cb.dataset.col, 10));
+  });
+  var patchData = {
+    rows: rows,
+    value_cols: vc,
+    header_rows: parseInt((($("tplHeaderIn")||{}).value || "0"), 10),
+    new_name: (($("tplNameIn")||{}).value || "")
+  };
+  var oldName = tplLibDetail.name;
+  api("update_template", oldName, patchData).then(function(st){
+    S = st;
+    tplLibCurrent = patchData.new_name || oldName;
+    renderTplLibList();
+    loadTplDetail(tplLibCurrent);
+    toast("模板已保存：" + tplLibCurrent, "ok");
+  }).catch(function(e){ toast(e.message||String(e), "err"); });
 }
 
 /* ================= 状态渲染 ================= */
@@ -779,15 +935,13 @@ function syncPageTemplateUI(){
 /* 设置页：模板面板同步 */
 function syncTemplatePanel(){
   var names = S.templates || [];
-  $("tplList").textContent = names.length ? names.join(" · ") : "尚未保存模板";
-  var sel = $("selTplDel"), cur = sel.value;
-  if(sel.options.length !== Math.max(1, names.length)){
-    sel.innerHTML = names.length
-      ? names.map(function(n){ return '<option value="'+esc(n)+'">'+esc(n)+'</option>'; }).join("")
-      : '<option value="">（无）</option>';
-    if(names.indexOf(cur) >= 0) sel.value = cur;
+  var el = $("tplList");
+  if(el){
+    el.textContent = names.length
+      ? "共 " + names.length + " 个模板：" + names.join(" · ")
+      : "尚无模板。查看、细调、删除请前往顶部「模板库」页；新模板在 OCR 识别页校对后点「存为模板」生成。";
   }
-  $("selTplAuto").value = (S.template_auto === false) ? "off" : "on";
+  if($("selTplAuto")) $("selTplAuto").value = (S.template_auto === false) ? "off" : "on";
 }
 
 /* 设置页：引擎档位下拉与状态同步 */

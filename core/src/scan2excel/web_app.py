@@ -119,6 +119,10 @@ class WebApi:
     # ------------------------------------------------------------------ #
     # 月计表模板：从校对好的一页生成 / 列表 / 删除 / 指定
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _tpl_safe(name: str) -> str:
+        return re.sub(r'[\/:*?"<>|]+', "_", name or "模板")
+
     def _load_templates(self) -> None:
         from .template_mode import TableTemplate
         self._templates = []
@@ -142,8 +146,13 @@ class WebApi:
         name = (name or "").strip() or f"模板{len(self._templates) + 1}"
         from .template_mode import build_template_from_page
         tpl = build_template_from_page(name, page.rows, page.xs, page.ys)
-        safe = re.sub(r'[\/:*?"<>|]+', "_", name)
+        safe = self._tpl_safe(name)
         tpl.save(self._templates_dir / f"{safe}.json")
+        if page.preview_jpeg:
+            try:
+                (self._templates_dir / f"{safe}.jpg").write_bytes(page.preview_jpeg)
+            except OSError:
+                pass
         self._load_templates()
         self._log(f"已保存月计表模板：{name}"
                   f"（{tpl.n_rows}行 x {tpl.n_cols}列，{len(tpl.value_cols)}个数值列，"
@@ -153,14 +162,95 @@ class WebApi:
     def delete_template(self, name: str) -> Dict[str, Any]:
         if self.state["busy"]:
             raise RuntimeError("识别进行中，无法删除模板")
-        for f in self._templates_dir.glob("*.json"):
+        base = self._tpl_safe(name)
+        for f in list(self._templates_dir.glob("*.json")) +                 list(self._templates_dir.glob("*.jpg")):
             try:
-                if f.stem == name or f.stem.replace("_", "/") == name:
+                if f.stem == base:
                     f.unlink()
             except OSError:
                 pass
         self._load_templates()
         self._log(f"已删除模板：{name}")
+        return self.state
+
+    def get_template_detail(self, name: str) -> Dict[str, Any]:
+        """模板完整内容（库页查看/细调用），含基准页预览图 dataURL。"""
+        tpl = next((t for t in self._templates if t.name == name), None)
+        if tpl is None:
+            raise RuntimeError(f"模板不存在：{name}")
+        d = tpl.to_dict()
+        pj = self._templates_dir / f"{self._tpl_safe(name)}.jpg"
+        d["preview"] = ""
+        if pj.is_file():
+            try:
+                d["preview"] = ("data:image/jpeg;base64,"
+                                + base64.b64encode(pj.read_bytes()).decode("ascii"))
+            except OSError:
+                pass
+        return d
+
+    def update_template(self, name: str, patch_data: Dict[str, Any]) -> Dict[str, Any]:
+        """模板库细调保存：单元格文本 / 数值列 / 表头行数 / 改名。
+
+        模板冻结的科目名与代码若有 OCR 错字，必须能在这里改掉——
+        否则错误会每月重复。
+        """
+        if self.state["busy"]:
+            raise RuntimeError("识别进行中，无法修改模板")
+        tpl = next((t for t in self._templates if t.name == name), None)
+        if tpl is None:
+            raise RuntimeError(f"模板不存在：{name}")
+        patch_data = patch_data or {}
+
+        rows = patch_data.get("rows")
+        if isinstance(rows, list) and rows:
+            n_cols = max(len(r) for r in rows)
+            tpl.rows = [[str(c) for c in (list(r) + [""] * n_cols)[:n_cols]]
+                        for r in rows]
+        if isinstance(patch_data.get("value_cols"), list):
+            vc = []
+            for c in patch_data["value_cols"]:
+                try:
+                    ic = int(c)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= ic < tpl.n_cols and ic not in vc:
+                    vc.append(ic)
+            tpl.value_cols = sorted(vc)
+        if patch_data.get("header_rows") is not None:
+            hr = int(patch_data["header_rows"])
+            tpl.header_rows = max(0, min(hr, max(0, tpl.n_rows - 1)))
+        if patch_data.get("code_col") is not None:
+            cc = int(patch_data["code_col"])
+            tpl.code_col = max(0, min(cc, tpl.n_cols - 1))
+
+        old_name = tpl.name
+        new_name = str(patch_data.get("new_name") or "").strip()
+        if new_name and new_name != old_name:
+            old_base = self._tpl_safe(old_name)
+            new_base = self._tpl_safe(new_name)
+            tpl.name = new_name
+            # 预览图随改名迁移（模板库对照用，不能丢）
+            old_jpg = self._templates_dir / f"{old_base}.jpg"
+            if old_jpg.is_file():
+                try:
+                    old_jpg.replace(self._templates_dir / f"{new_base}.jpg")
+                except OSError:
+                    pass
+            old_json = self._templates_dir / f"{old_base}.json"
+            if old_json.is_file():
+                try:
+                    old_json.unlink()
+                except OSError:
+                    pass
+            # 页级指定同步改名，避免引用悬挂
+            for im in self.state["images"]:
+                if im.get("template_name") == old_name:
+                    im["template_name"] = new_name
+        tpl.save(self._templates_dir / f"{self._tpl_safe(tpl.name)}.json")
+        self._load_templates()
+        self._log(f"模板已更新：{tpl.name}（{tpl.n_rows}行 x {tpl.n_cols}列 · "
+                  f"数值列 {len(tpl.value_cols)} 个 · 表头 {tpl.header_rows} 行）")
         return self.state
 
     def set_template_auto(self, on: bool) -> Dict[str, Any]:
