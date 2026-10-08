@@ -715,14 +715,101 @@ def match_xlsx_template(templates: List[XlsxTemplate],
     return doc, pg, score, "", cells
 
 
+def _key_code(t: str) -> str:
+    return "".join(ch for ch in (t or "") if ch.isdigit() or ch.isalpha())
+
+
+def _key_match(a: str, b: str) -> bool:
+    """科目键匹配（代码优先、容忍零星误读）。"""
+    a, b = _key_code(a), _key_code(b)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    n = min(len(a), len(b))
+    same = sum(1 for i in range(n) if a[i] == b[i])
+    return same / max(len(a), len(b)) >= 0.75
+
+
+def build_row_mapping(tpl_page: XlsxSheetPage,
+                      geo_keys: Dict[int, Tuple[str, str]]):
+    """VLOOKUP 式行对齐：把模板数据行映射到照片检出的行。
+
+    geo_keys: {几何行号: (科目代码, 科目名称)}（来自照片上的 det 文本）。
+    返回 (row_map, unmatched_tpl, extra_geo)：
+      row_map      {模板行 -> 几何行}（代码/名称匹配上的）
+      unmatched_tpl[(模板行, 代码, 名称)]  照片里找不到的模板行
+      extra_geo   [(几何行, 代码)]         照片里多出的行
+    合计行等空代码行不参与匹配（由调用方按邻近行偏移对齐）。
+    """
+    tpl_rows = []
+    for r in range(tpl_page.n_rows):
+        if r < tpl_page.header_rows or r in tpl_page.mid_rows:
+            continue
+        code = str(tpl_page.rows[r][0] if tpl_page.rows[r] else "").strip()
+        name = str(tpl_page.rows[r][1] if len(tpl_page.rows[r]) > 1 else "").strip()
+        if _key_code(code):
+            tpl_rows.append((r, code, name))
+
+    used_geo = set()
+    row_map: Dict[int, int] = {}
+    # 第一轮：代码精确/模糊匹配
+    for (tr, code, name) in tpl_rows:
+        for gr in sorted(geo_keys):
+            if gr in used_geo:
+                continue
+            gcode, gname = geo_keys[gr]
+            if _key_match(code, gcode):
+                row_map[tr] = gr
+                used_geo.add(gr)
+                break
+    # 第二轮：名称匹配（代码误读严重的行）
+    for (tr, code, name) in tpl_rows:
+        if tr in row_map or not name:
+            continue
+        for gr in sorted(geo_keys):
+            if gr in used_geo:
+                continue
+            gcode, gname = geo_keys[gr]
+            if gname and _match_text(name, gname):
+                row_map[tr] = gr
+                used_geo.add(gr)
+                break
+    unmatched_tpl = [(tr, code, name) for (tr, code, name) in tpl_rows
+                     if tr not in row_map]
+    extra_geo = []
+    for gr in sorted(geo_keys):
+        if gr in used_geo:
+            continue
+        gcode, gname = geo_keys[gr]
+        # 合计行（代码空/名称含"合计"）由邻近偏移对齐，不算"多出的行"
+        if "合计" in (gname or "") or "合计" in (gcode or ""):
+            continue
+        if not _key_code(gcode) and not (gname or "").strip():
+            continue
+        if _key_code(gcode):
+            extra_geo.append((gr, gcode))
+    return row_map, unmatched_tpl, extra_geo
+
+
 def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
                         engine, doc_name: str = "",
-                        cells: Optional[Dict[Cell, Tuple[int, int, int, int]]] = None):
+                        cells: Optional[Dict[Cell, Tuple[int, int, int, int]]] = None,
+                        fill_mode: str = "vlookup"):
     """套用 xlsx 模板页：结构区取模板文本，数字区逐格 OCR 填入。
 
+    fill_mode：
+      "vlookup"（默认，稳）——按科目代码/名称做行级 VLOOKUP 对齐后填入，
+          数值只会落到"科目匹配上的那一行"；未匹配的行留空并给出明确提示，
+          照片里多出的行忽略。专防"数值正确但填错行"。
+      "position"——按网格位置直接填入（旧行为；用户确认后可选）。
     cells：匹配阶段给出的铺格坐标（几何优先）。缺省时用检测网格。
+    返回 (warnings, mismatch)；mismatch 供界面提示用户选择。
     """
     warnings: List[str] = []
+    mismatch: Dict = {}
     if cells is None:
         cells = {(c.row, c.col): (c.x, c.y, c.w, c.h)
                  for c in structure.cells}
@@ -732,10 +819,8 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
     H = structure.image.shape[0]
     W = structure.image.shape[1]
 
-    # 数字填充优先用"整表 det 的整体文本按中心落格"——det 把完整数字识别
-    # 成一条，避免按格裁切把数字切穿（如 1,983,687,343.16 → "…343." + "16"）；
-    # 该格没有 det 文本时才退回按格裁切识别
-    det_by_cell = {}
+    # 整表 det 文本按铺格落位（避免按格裁切切穿数字）
+    det_by_cell: Dict[Cell, List] = {}
     for box, text, score in (structure.det_items or []):
         if not str(text).strip():
             continue
@@ -747,44 +832,116 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
                     (sum(pt[1] for pt in box) / len(box), cx, str(text), float(score)))
                 break
 
-    for r in range(n_rows):
-        for c in range(n_cols):
-            if (r, c) not in tpl_page.num_cells:
+    def cell_text(gr: int, gc: int):
+        """几何行 gr、列 gc 的文本（det 优先，缺失时裁切识别）。"""
+        got = det_by_cell.get((gr, gc))
+        if got:
+            got.sort(key=lambda e: (e[0], e[1]))
+            return ("".join(t for _cy, _cx, t, _s in got),
+                    min(s for _cy, _cx, _t, s in got))
+        box = cells.get((gr, gc))
+        if box is None:
+            return "", 1.0
+        x, y, w, h = box
+        crop = structure.image[max(0, y - 2):min(H, y + h + 2),
+                               max(0, x - 2):min(W, x + w + 2)]
+        if crop.size == 0 or engine.is_blank(crop):
+            return "", 1.0
+        return engine.recognize_cell_numeric(crop)
+
+    # ---- 行级 VLOOKUP 对齐 ----
+    data_geo_rows = [r for r in range(n_rows)
+                     if r >= tpl_page.header_rows and r not in tpl_page.mid_rows]
+    geo_keys: Dict[int, Tuple[str, str]] = {}
+    for gr in data_geo_rows:
+        code = cell_text(gr, 0)[0]
+        name = cell_text(gr, 1)[0]
+        geo_keys[gr] = (code, name)
+
+    if fill_mode == "vlookup" and tpl_page.n_rows:
+        row_map, unmatched_tpl, extra_geo = build_row_mapping(tpl_page, geo_keys)
+        # 未匹配行（合计等空代码行）：按同段邻近匹配行的偏移对齐
+        mid = max(tpl_page.mid_rows) if tpl_page.mid_rows else -1
+
+        def section_of(r: int) -> int:
+            return 0 if (mid < 0 or r <= mid) else 1
+
+        offsets_within = {}
+        for tr, gr in row_map.items():
+            offsets_within.setdefault(section_of(tr), []).append(gr - tr)
+        for r in data_geo_rows:
+            if r in row_map:
                 continue
-            got = det_by_cell.get((r, c))
-            if got:
-                got.sort(key=lambda e: (e[0], e[1]))
-                text = "".join(t for _cy, _cx, t, _s in got)
-                score = min(s for _cy, _cx, _t, s in got)
-                out_rows[r][c] = text
-                if text:
-                    page.scores[f"{r},{c}"] = score
-                    page.min_score = min(page.min_score, score)
+            code = str(tpl_page.rows[r][0] if tpl_page.rows[r] else "").strip()
+            name = str(tpl_page.rows[r][1] if len(tpl_page.rows[r]) > 1 else "").strip()
+            if _key_code(code):
+                continue          # 有代码但没匹配上 → 保持未填充
+            seg = offsets_within.get(section_of(r))
+            if seg:
+                from statistics import median as _med
+                gr = r + int(round(_med(seg)))
+                if 0 <= gr < n_rows:
+                    row_map[r] = gr
+        mismatch = {
+            "mode": "vlookup",
+            "matched": len(row_map),
+            "unmatched": [[tr, code, name] for (tr, code, name) in unmatched_tpl],
+            "extra": [[gr, gc] for (gr, gc) in extra_geo],
+        }
+        if unmatched_tpl:
+            head = "；".join(f"第{tr + 1}行[{code} {name}]"
+                            for (tr, code, name) in unmatched_tpl[:4])
+            warnings.append(f"{len(unmatched_tpl)} 行科目未在照片中找到对应"
+                            f"（已留空）：{head}"
+                            + ("…" if len(unmatched_tpl) > 4 else ""))
+        if extra_geo:
+            head = "；".join(f"第{gr + 1}行[{code}]" for (gr, code) in extra_geo[:4])
+            warnings.append(f"照片中有 {len(extra_geo)} 行模板未包含（已忽略）：{head}"
+                            + ("…" if len(extra_geo) > 4 else ""))
+    else:
+        # 按位置填充（旧行为）；仍记录键不匹配的行以提示
+        row_map = {r: r for r in data_geo_rows}
+        if fill_mode == "position":
+            _, unmatched_tpl, extra_geo = build_row_mapping(tpl_page, geo_keys)
+            mismatch = {"mode": "position", "matched": len(row_map) - len(unmatched_tpl),
+                        "unmatched": [[tr, code, name] for (tr, code, name) in unmatched_tpl],
+                        "extra": [[gr, gc] for (gr, gc) in extra_geo]}
+            if unmatched_tpl or extra_geo:
+                warnings.append(
+                    f"按位置强制填充：{len(unmatched_tpl)} 行科目对不上、"
+                    f"{len(extra_geo)} 行照片多出，数值可能填错行，请重点核对")
+
+    # ---- 填值（按 row_map 从对应几何行取数）----
+    for tr in range(n_rows):
+        if tr < tpl_page.header_rows or tr in tpl_page.mid_rows:
+            continue
+        gr = row_map.get(tr)
+        if gr is None:
+            # 未匹配：清空该行数值（保留模板冻结文本），避免位置猜测
+            for c in tpl_page.value_cols:
+                if c < len(out_rows[tr]):
+                    out_rows[tr][c] = ""
+            continue
+        for c in tpl_page.value_cols:
+            if (gr, c) not in tpl_page.num_cells and fill_mode == "vlookup":
+                pass
+            text, score = cell_text(gr, c)
+            if c >= len(out_rows[tr]):
                 continue
-            box = cells.get((r, c))
-            if box is None:
-                continue
-            x, y, w, h = box
-            crop = structure.image[max(0, y - 2):min(H, y + h + 2),
-                                   max(0, x - 2):min(W, x + w + 2)]
-            if crop.size == 0:
-                continue
-            if engine.is_blank(crop):
-                out_rows[r][c] = ""
-                continue
-            text, score = engine.recognize_cell_numeric(crop)
-            out_rows[r][c] = text
+            out_rows[tr][c] = text
             if text:
-                page.scores[f"{r},{c}"] = score
+                page.scores[f"{tr},{c}"] = score
                 page.min_score = min(page.min_score, score)
 
+    # 覆盖预览：数字区绿框（高亮实际取数的几何格）
     import cv2
     overlay = structure.image.copy()
-    for (r, c) in sorted(tpl_page.num_cells):
-        box = cells.get((r, c))
-        if box is not None:
-            x, y, w, h = box
-            cv2.rectangle(overlay, (x, y), (x + w, y + h), (80, 200, 80), 2)
+    for tr, gr in row_map.items():
+        for c in tpl_page.value_cols:
+            box = cells.get((gr, c))
+            if box is not None:
+                x, y, w, h = box
+                cv2.rectangle(overlay, (x, y), (x + w, y + h), (80, 200, 80), 2)
 
     page.mode = "table"
     page.borderless = False
@@ -793,14 +950,15 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
                    if int(m[0]) < n_rows]
     page.n_rows, page.n_cols = n_rows, n_cols
     page.template = f"{doc_name}·{tpl_page.page_name}" if doc_name         else tpl_page.page_name
-    # 铺格坐标转预览坐标（界面联动/高亮用）
+    page.fill_mode = fill_mode
+    page.row_mismatch = mismatch
     from .service import _encode_jpeg, _scale_for
     sc = _scale_for(structure.image)
     page.cell_boxes = {
         f"{r},{c}": [int(x * sc), int(y * sc), int(w * sc), int(h * sc)]
         for (r, c), (x, y, w, h) in cells.items()}
     page.overlay_jpeg = _encode_jpeg(overlay)
-    return warnings
+    return warnings, mismatch
 
 
 # ----------------------------------------------------------------------

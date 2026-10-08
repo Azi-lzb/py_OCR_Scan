@@ -519,6 +519,7 @@ class WebApi:
                 "elapsed": 0.0, "error": "", "warped": False, "borderless": False,
                 "min_score": 1.0, "ignore_regions": [],
                 "template_name": "", "template": "", "warning": "",
+                "fill_mode": "vlookup", "row_mismatch": {},
             })
             added += 1
             if p not in self._previews:
@@ -668,6 +669,20 @@ class WebApi:
                          name="text-ocr").start()
         return True
 
+    def set_page_fill_mode(self, index: int, mode: str) -> Dict[str, Any]:
+        """设置某页的填充模式：vlookup=按科目对齐（默认）/ position=按位置强制。
+
+        用户在对齐提示中选"继续填充"时调用 position，然后重识别该页。
+        """
+        if self.state["busy"]:
+            raise RuntimeError("识别进行中，无法修改填充模式")
+        mode = "position" if str(mode) == "position" else "vlookup"
+        if 0 <= index < len(self.state["images"]):
+            self.state["images"][index]["fill_mode"] = mode
+            self._log(f"填充模式已设为："
+                      + ("按位置强制填充" if mode == "position" else "按科目对齐（VLOOKUP）"))
+        return self.state
+
     def reprocess_page(self, index: int = -1) -> bool:
         """重新识别指定页（默认当前页）。
 
@@ -723,7 +738,8 @@ class WebApi:
                         server_rec=bool(self.state.get("high_accuracy")),
                         ignore_regions=info.get("ignore_regions") or [],
                         templates=tpl_list,
-                        template_name=tname)
+                        template_name=tname,
+                        fill_mode=info.get("fill_mode", "vlookup"))
                 except Exception:  # process_image 只在"用户取消"时向外抛
                     info["status"] = "等待"
                     self._log("已取消识别")
@@ -739,6 +755,8 @@ class WebApi:
                     "borderless": page.borderless,
                     "template": page.template,
                     "warning": page.warning,
+                    "fill_mode": page.fill_mode,
+                    "row_mismatch": page.row_mismatch or {},
                     "min_score": round(page.min_score, 3),
                 })
                 if page.error:

@@ -89,6 +89,8 @@ class TablePage:
     template: str = ""              # 命中的月计表模板名（模板模式）
     template_file: str = ""         # xlsx 模板文件路径（导出时基于它填值）
     template_page: str = ""         # 命中的模板工作表名
+    fill_mode: str = "vlookup"      # 填充模式：vlookup=按科目对齐 / position=按位置
+    row_mismatch: Dict = field(default_factory=dict)  # 行对齐结果（供界面提示）
     warning: str = ""               # 模板校验等提示信息
     xs: List[int] = field(default_factory=list)   # 列/行边界（有框线模式的网格）
     ys: List[int] = field(default_factory=list)
@@ -107,6 +109,7 @@ class TablePage:
             "elapsed": round(self.elapsed, 2), "error": self.error,
             "warped": self.warped, "borderless": self.borderless,
             "template": self.template, "template_page": self.template_page,
+            "fill_mode": self.fill_mode, "row_mismatch": self.row_mismatch,
             "warning": self.warning,
             "min_score": round(self.min_score, 3),
         }
@@ -127,7 +130,8 @@ class Scan2ExcelService:
                       server_rec: bool = False,
                       ignore_regions: Optional[List[Dict]] = None,
                       templates: Optional[List] = None,
-                      template_name: str = "") -> TablePage:
+                      template_name: str = "",
+                      fill_mode: str = "vlookup") -> TablePage:
         name = os.path.splitext(os.path.basename(path))[0]
         page = TablePage(path=path, name=name)
         self._server_rec = server_rec
@@ -181,7 +185,7 @@ class Scan2ExcelService:
                     if templates:
                         applied = self._try_template(page, structure, templates,
                                                      template_name, on_step,
-                                                     per_cell)
+                                                     per_cell, fill_mode)
                     if not applied:
                         self._recognize_title(page, structure, on_step)
                         self._build_grid(page, structure)
@@ -484,7 +488,8 @@ class Scan2ExcelService:
     def _try_template(self, page: TablePage, structure: TableStructure,
                       templates: List, template_name: str,
                       on_step: Optional[StepCallback],
-                      per_cell: Optional[Dict] = None) -> bool:
+                      per_cell: Optional[Dict] = None,
+                      fill_mode: str = "vlookup") -> bool:
         """月计表模板模式：命中模板则只 OCR 数值列（行列与科目文本冻结）。
 
         指定了 template_name 时强制使用该模板（仍校验，不匹配只告警）；
@@ -505,12 +510,18 @@ class Scan2ExcelService:
                 force_doc=template_name)
             if doc is not None:
                 self._step(on_step, f"套用 xlsx 模板：{doc.name}·{tpl_page.page_name}"
-                                     f"（结构区命中 {score:.0%}）")
-                warns = apply_xlsx_template(page, structure, tpl_page,
-                                            self._engine(), doc_name=doc.name,
-                                            cells=cells)
+                                     f"（结构区命中 {score:.0%}，"
+                                     + ("按科目对齐填充" if fill_mode == "vlookup"
+                                        else "按位置填充") + "）")
+                warns, mismatch = apply_xlsx_template(
+                    page, structure, tpl_page, self._engine(),
+                    doc_name=doc.name, cells=cells, fill_mode=fill_mode)
                 page.template_file = str(doc.path)
                 page.template_page = tpl_page.page_name
+                if mismatch and (mismatch.get("unmatched") or mismatch.get("extra")):
+                    n_bad = len(mismatch.get("unmatched") or []) + len(mismatch.get("extra") or [])
+                    self._step(on_step, f"行对齐：{mismatch.get('matched', 0)} 行匹配，"
+                                         f"{n_bad} 行需人工确认")
                 base = [f"{w}" for w in warns if w]
                 extra = self._run_check_formulas(doc, page)
                 if extra:

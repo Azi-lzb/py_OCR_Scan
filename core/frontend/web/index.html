@@ -1018,6 +1018,47 @@ function render(){
   renderBadge(); renderList(); renderButtons(); renderLog();
   renderTable(); renderPreview(); syncEngineSetting(); syncTemplatePanel();
   syncPageTemplateUI();
+  maybePromptRowMismatch();
+}
+
+/* 行对齐提示：数值已按科目对齐填充；不匹配行提示用户选择继续(按位置)或取消 */
+var mismatchPrompted = {};
+function maybePromptRowMismatch(){
+  var idx = S.current;
+  if(idx < 0 || idx >= S.images.length) return;
+  var info = S.images[idx];
+  if(!info || info.status !== "完成" || !info.template) return;
+  var mm = info.row_mismatch || {};
+  var bad = (mm.unmatched || []).length + (mm.extra || []).length;
+  if(!bad) return;
+  var key = idx + "|" + (mm.mode || "") + "|" + bad + "|" + info.fill_mode;
+  if(mismatchPrompted[key]) return;
+  mismatchPrompted[key] = true;
+  var lines = [];
+  (mm.unmatched || []).slice(0, 6).forEach(function(u){
+    lines.push("· 模板第" + (u[0]+1) + "行 [" + (u[1]||"") + " " + (u[2]||"") + "] 照片中未找到对应行（已留空）");
+  });
+  (mm.extra || []).slice(0, 4).forEach(function(e){
+    lines.push("· 照片第" + (e[0]+1) + "行 [" + (e[1]||"") + "] 模板未包含（已忽略）");
+  });
+  var msg = "行对齐提示（防止数值填错行）：
+
+"
+    + lines.join("
+")
+    + "
+
+当前已按【科目代码/名称】对齐填充（推荐）。"
+    + "
+
+点【确定】= 改为按位置强制填充（仅在对齐明显有误时使用，可能串行）"
+    + "
+点【取消】= 保留当前按科目对齐的结果";
+  if(confirm(msg)){
+    api("set_page_fill_mode", idx, "position").then(function(){
+      api("reprocess_page", idx).then(function(ok){ if(ok) poll(); });
+    }).catch(function(e){ toast(e.message||String(e), "err"); });
+  }
 }
 
 /* 当前页模板选择器同步 */
