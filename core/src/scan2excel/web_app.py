@@ -450,16 +450,30 @@ class WebApi:
         return self.state
 
     def set_page_template(self, index: int, name: str) -> Dict[str, Any]:
-        """给某页指定模板：""=跟随自动匹配，"__none__"=本页不使用，其余=模板名。"""
+        """给某页指定模板：""=自动匹配，"__none__"=不用，"文档::页名"=指定页。"""
         if 0 <= index < len(self.state["images"]):
             name = str(name or "")
-            if name and name != "__none__" and                     not any(t.name == name for t in self._templates):
-                name = ""
-            self.state["images"][index]["template_name"] = name
-            if name:
-                self._log(f"已为「{self.state['images'][index]['name']}」指定模板："
-                          + ("不使用" if name == "__none__" else name))
+            doc_name, page_name = name, ""
+            if "::" in name:
+                doc_name, page_name = name.split("::", 1)
+            if doc_name and doc_name != "__none__" and                     not any(t.name == doc_name for t in self._templates):
+                doc_name, page_name = "", ""
+            im = self.state["images"][index]
+            im["template_name"] = doc_name
+            im["template_page"] = page_name
+            if doc_name:
+                desc = "不使用" if doc_name == "__none__" else (
+                    f"{doc_name}·{page_name}" if page_name else doc_name)
+                self._log(f"已为「{im['name']}」指定模板：{desc}")
         return self.state
+
+    def get_template_pages(self, name: str) -> List[str]:
+        """模板文档的所有页名（界面"指定到具体页"用）。"""
+        tpl = next((t for t in self._templates if t.name == name), None)
+        if tpl is None:
+            return []
+        pages = getattr(tpl, "pages", []) or []
+        return [getattr(p, "page_name", "") for p in pages]
 
     def get_thumb(self, index: int) -> str:
         """列表缩略图（约 96px）dataURL；按路径缓存，复用原图预览解码。"""
@@ -518,7 +532,8 @@ class WebApi:
                 "status": "等待", "mode": "table", "n_rows": 0, "n_cols": 0,
                 "elapsed": 0.0, "error": "", "warped": False, "borderless": False,
                 "min_score": 1.0, "ignore_regions": [],
-                "template_name": "", "template": "", "warning": "",
+                "template_name": "", "template_page": "",
+                "template": "", "warning": "",
                 "fill_mode": "vlookup", "row_mismatch": {},
             })
             added += 1
@@ -739,6 +754,7 @@ class WebApi:
                         ignore_regions=info.get("ignore_regions") or [],
                         templates=tpl_list,
                         template_name=tname,
+                        template_page=info.get("template_page", ""),
                         fill_mode=info.get("fill_mode", "vlookup"))
                 except Exception:  # process_image 只在"用户取消"时向外抛
                     info["status"] = "等待"
@@ -825,7 +841,8 @@ class WebApi:
             pg = tpl_pages[0]
             fill_template_workbook(Path(pg.template_file),
                                    {pg.template_page or "第1页": pg}, Path(out))
-            checks = evaluate_checks(Path(pg.template_file), Path(out))
+            checks = evaluate_checks(Path(pg.template_file), Path(out),
+                                     sheets=[pg.template_page or "第1页"])
             self._log(f"已按模板填值导出：{out}")
             for c in checks[:5]:
                 self._log("勾稽提示：" + c)

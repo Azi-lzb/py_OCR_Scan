@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.utils import get_column_letter, range_boundaries
+from openpyxl.utils import (column_index_from_string, get_column_letter,
+                            range_boundaries)
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -339,12 +340,6 @@ def save_sheet_to_workbook(path: Path, sheet_name: str, rows: List[List[str]],
         wb.remove(wb.active)
     else:
         wb = load_workbook(path, data_only=False)
-    if CHECK_SHEET not in wb.sheetnames:
-        ws_check = wb.create_sheet(CHECK_SHEET)
-        ws_check["A1"] = "勾稽校验（在此写 Excel 公式，如 B2 = =数据!G8-SUM(数据!G3:G7)；结果非 0 会在套用时告警）"
-        ws_check["A1"].font = ws_check["A1"].font.copy(bold=True)
-        ws_check.column_dimensions["A"].width = 96
-
     # 表名去重
     name = sheet_name or "第1页"
     base = name
@@ -422,107 +417,6 @@ def save_sheet_to_workbook(path: Path, sheet_name: str, rows: List[List[str]],
 
     wb.save(path)
     wb.close()
-
-
-# ----------------------------------------------------------------------
-# 勾稽公式生成（用户口径：上期借-上期贷+本期发生借-本期发生贷 = 本期借-本期贷）
-# ----------------------------------------------------------------------
-def generate_balance_checks(path: Path, sheet_name: str,
-                            pg: XlsxSheetPage) -> int:
-    """为模板页生成逐行勾稽差额公式，写入「勾稽」表。
-
-    差额 = (上期借-上期贷) + (本期发生借-本期发生贷) - (本期借-本期贷)，
-    正常应为 0。公式全部写全表名引用，用户对该列加条件格式（<>0）即可
-    可视化告警；有中缝段（收/付方）时按段分别生成。
-    返回生成的公式行数。
-    """
-    # 兼容两种页对象：XlsxSheetPage（有 num_cells/col_labels()）与
-    # template_mode.TemplatePage（有 value_cols/col_labels 列表）
-    raw_labels = pg.col_labels() if callable(getattr(pg, "col_labels", None))         else list(getattr(pg, "col_labels", []) or [])
-    labels = [str(x or "") for x in raw_labels]
-
-    def _seg_num_cells(r0: int, r1: int):
-        nc = getattr(pg, "num_cells", None)
-        if nc:
-            return {(r, c) for (r, c) in nc if r0 <= r < r1}
-        cols = list(getattr(pg, "value_cols", []) or [])
-        mids = getattr(pg, "mid_rows", None)
-        mids = set(mids) if mids else set()
-        mr = int(getattr(pg, "mid_section_row", -1) or -1)
-        if mr >= 0:
-            mids.add(mr)
-        return {(r, c) for r in range(r0, r1) if r not in mids for c in cols}
-
-    def find_col(include, exclude=()):
-        for i, lab in enumerate(labels):
-            if not lab:
-                continue
-            if all(k in lab for k in include) and not any(n in lab for n in exclude):
-                return i
-        return -1
-
-    # 段落：[（名称, 起始行含, 结束行不含, 借方关键字, 贷方关键字）]
-    segs = []
-    mids = getattr(pg, "mid_rows", None)
-    mids = set(mids) if mids else set()
-    mr = int(getattr(pg, "mid_section_row", -1) or -1)
-    if mr >= 0:
-        mids.add(mr)
-    if mids:
-        mid_lo, mid_hi = min(mids), max(mids)   # 中缝表头可能占两行
-        segs.append(("上段", pg.header_rows, mid_lo, "借", "贷"))
-        segs.append(("中缝段", mid_hi + 1, pg.n_rows, "收", "付"))
-    else:
-        segs.append(("全表", pg.header_rows, pg.n_rows, "借", "贷"))
-
-    q = f"'{sheet_name}'" if re.search(r"[^A-Za-z0-9_一-鿿]", sheet_name)         else sheet_name
-    wb = load_workbook(Path(path), data_only=False)
-    if BALANCE_SHEET not in wb.sheetnames:
-        ws = wb.create_sheet(BALANCE_SHEET)
-        ws["A1"] = "模板页"
-        ws["B1"] = "行"
-        ws["C1"] = "科目"
-        ws["D1"] = "勾稽差额（0=平；可对本列加条件格式 <>0 告警）"
-        ws["E1"] = "段落"
-        ws.column_dimensions["A"].width = 14
-        ws.column_dimensions["C"].width = 22
-        ws.column_dimensions["D"].width = 60
-        ws.column_dimensions["E"].width = 12
-    ws = wb[BALANCE_SHEET]
-    row_out = ws.max_row + 1
-    made = 0
-    for seg_name, r0, r1, dkw, ckw in segs:
-        open_d = find_col(["上期", dkw])
-        open_c = find_col(["上期", ckw])
-        per_d = find_col(["发生", dkw])
-        per_c = find_col(["发生", ckw])
-        close_d = find_col(["余额", dkw], exclude=("上期",))
-        close_c = find_col(["余额", ckw], exclude=("上期",))
-        if min(open_d, open_c, per_d, per_c, close_d, close_c) < 0:
-            # 兜底：表头标签不全（组标题行未被识别）时按"数值列从左到右
-            # 借/贷交替成对"推断——三对依次为 上期/发生/期末
-            seg_cols = sorted({c for (r, c) in _seg_num_cells(r0, r1)})
-            if len(seg_cols) >= 6:
-                open_d, open_c, per_d, per_c, close_d, close_c = seg_cols[:6]
-            else:
-                continue      # 列数不足以配对，跳过（不硬编）
-        L = get_column_letter
-        for r in range(r0, r1):
-            code = str(pg.rows[r][0] or pg.rows[r][1] or "").strip()
-            rn = r + 1
-            formula = (f"={q}!{L(open_d + 1)}{rn}-{q}!{L(open_c + 1)}{rn}"
-                       f"+{q}!{L(per_d + 1)}{rn}-{q}!{L(per_c + 1)}{rn}"
-                       f"-({q}!{L(close_d + 1)}{rn}-{q}!{L(close_c + 1)}{rn})")
-            ws.cell(row=row_out, column=1, value=sheet_name)
-            ws.cell(row=row_out, column=2, value=rn)
-            ws.cell(row=row_out, column=3, value=code)
-            ws.cell(row=row_out, column=4, value=formula)
-            ws.cell(row=row_out, column=5, value=seg_name)
-            row_out += 1
-            made += 1
-    wb.save(Path(path))
-    wb.close()
-    return made
 
 
 # ----------------------------------------------------------------------
@@ -649,7 +543,8 @@ def refine_cells_by_anchors(pg: XlsxSheetPage, cells, centers) -> Dict:
 def match_xlsx_template(templates: List[XlsxTemplate],
                         structure,
                         n_rows: int, n_cols: int,
-                        force_doc: str = ""):
+                        force_doc: str = "",
+                        force_page: str = ""):
     """在 xlsx 模板（文档×表）里选最佳匹配。
 
     匹配用"结构区文本命中率"：
@@ -668,6 +563,8 @@ def match_xlsx_template(templates: List[XlsxTemplate],
         if force_doc and doc.name != force_doc:
             continue
         for pg in doc.pages:
+            if force_page and pg.page_name != force_page:
+                continue
             texts = pg.struct_texts()
             if not texts:
                 continue
@@ -708,9 +605,12 @@ def match_xlsx_template(templates: List[XlsxTemplate],
                 best = (doc, pg, score, det_cells)
     doc, pg, score, cells = best
     if doc is None:
-        note = ("尺寸不符：" + "；".join(notes[:3])) if notes else "无候选"
+        note = ("尺寸不符：" + "；".join(notes[:3])) if notes else             ("指定页未找到" if force_page else "无候选")
         return None, None, 0.0, note, {}
     if score < 0.55:
+        if force_page:
+            # 用户显式指定了页：仍套用，但明确告警命中率低
+            return doc, pg, score, f"结构区命中率仅 {score:.0%}（按指定页填充，请重点核对）", cells
         return None, None, score, f"结构区命中率仅 {score:.0%}", {}
     return doc, pg, score, "", cells
 
@@ -998,24 +898,60 @@ def fill_template_workbook(tpl_path: Path, sheet_fills: Dict[str, object],
     wb.close()
 
 
-def evaluate_checks(tpl_path: Path, filled_path: Path) -> List[str]:
-    """在填充后的工作簿上求值校验表公式；结果非 0/非空/False 即告警。
+def _instantiate_cf(formula: str, arow: int, acol: int, r: int, c: int) -> str:
+    """把条件格式公式按"锚点单元格 -> 目标单元格"实例化。
 
-    轻量求值器：支持 单元格引用(可跨表)、SUM/ABS/MIN/MAX/ROUND、四则、
-    比较运算与 IF；不支持的公式跳过并提示在 Excel 中查看。
+    CF 公式里的相对引用（行列号前无 $）相对于规则范围左上角，对范围里
+    每一格都要换算成该格的实际坐标（如 B3:B25 的 $C3 -> 第4行时 $C4）。
+    """
+    def repl(m):
+        colp, rowp = m.group(1), m.group(2)
+        col_abs, row_abs = colp.startswith("$"), rowp.startswith("$")
+        if col_abs:
+            outc = colp.lstrip("$")
+        else:
+            outc = get_column_letter(c + (column_index_from_string(colp) - acol))
+        outr = int(rowp.lstrip("$")) if row_abs else \
+            r + (int(rowp.lstrip("$")) - arow)
+        return ("$" if col_abs else "") + outc + str(outr)
+
+    return re.sub(r"(\$?[A-Za-z]{1,3})(\$?\d+)", repl, formula)
+
+
+def evaluate_checks(tpl_path: Path, filled_path: Path,
+                    sheets: Optional[List[str]] = None) -> List[str]:
+    """评估模板数据表上的**条件格式**勾稽规则（用户自建，不平标红）。
+
+    读取每个数据工作表的 expression 型条件格式，逐格实例化公式并求值：
+    命中（返回真 = 该格本该标红）的行在应用内报"勾稽不平"，与 Excel 中
+    看到的红色标记一致——不用打开 Excel 也能第一时间发现。
+
+    sheets 指定时只评估这些工作表（本次实际填充的页）；缺省评估全部
+    数据表——多页模板里其它页保留的是模板原值，通常不该一起判。
     """
     out: List[str] = []
     try:
         wb = load_workbook(Path(filled_path), data_only=False)
     except Exception:
         return out
-    if CHECK_SHEET not in wb.sheetnames:
-        wb.close()
-        return out
 
-    cache: Dict[Tuple[str, str], object] = {}
+    cache = {}
 
-    def cell_val(sheet: str, coord: str):
+    def _sumargs(*a):
+        vals = a[0] if len(a) == 1 and isinstance(a[0], (list, tuple)) else a
+        return float(sum(x for x in vals if isinstance(x, (int, float))))
+
+    def _minargs(*a):
+        vals = a[0] if len(a) == 1 and isinstance(a[0], (list, tuple)) else a
+        nums = [x for x in vals if isinstance(x, (int, float))]
+        return min(nums) if nums else 0.0
+
+    def _maxargs(*a):
+        vals = a[0] if len(a) == 1 and isinstance(a[0], (list, tuple)) else a
+        nums = [x for x in vals if isinstance(x, (int, float))]
+        return max(nums) if nums else 0.0
+
+    def cell_val(sheet, coord):
         key = (sheet, coord)
         if key in cache:
             return cache[key]
@@ -1025,7 +961,7 @@ def evaluate_checks(tpl_path: Path, filled_path: Path) -> List[str]:
             return 0.0
         v = ws[coord].value
         if isinstance(v, str) and v.startswith("="):
-            v = _eval_formula(v, sheet)
+            v = _eval_formula(v, sheet, 0)
         if isinstance(v, str):
             s = v.strip().replace(",", "")
             try:
@@ -1037,10 +973,12 @@ def evaluate_checks(tpl_path: Path, filled_path: Path) -> List[str]:
         cache[key] = v
         return v
 
-    def _refs(expr: str, sheet: str, depth: int):
-        # 展开 A1 与 SUM(A1:B2) 里的引用为值
-        def sum_range(ab):
-            a, b = ab
+    def _expand_sum(expr, sheet):
+        def repl(m):
+            arg = m.group(1).strip()
+            if ":" not in arg:
+                return m.group(0)
+            a, b = arg.split(":", 1)
             sh = sheet
             if "!" in a:
                 sh, a = a.split("!", 1)
@@ -1048,48 +986,29 @@ def evaluate_checks(tpl_path: Path, filled_path: Path) -> List[str]:
             if "!" in b:
                 b = b.split("!", 1)[1]
             vals = []
-            c0, r0, c1, r1 = range_boundaries(f"{a}:{b}")
+            c0, r0, c1, r1 = range_boundaries(a + ":" + b)
             for rr in range(r0, r1 + 1):
                 for cc in range(c0, c1 + 1):
-                    vals.append(cell_val(sh, f"{get_column_letter(cc)}{rr}"))
-            return str(sum(v for v in vals if isinstance(v, (int, float))))
+                    vals.append(cell_val(sh, get_column_letter(cc) + str(rr)))
+            return repr(_sumargs(*vals))
+        return re.sub(r"(?i)SUM\(\s*([^()]+?)\s*\)", repl, expr)
 
-        expr = re.sub(r"(?i)SUM\(\s*([^()]+?)\s*\)",
-                      lambda m: sum_range(_split_sum_args(m.group(1))), expr)
-        def ref_sub(m):
-            sh = m.group(1) or sheet
-            return str(cell_val(sh.strip("'"), m.group(2)))
-        # 带表名前缀的引用
-        expr = re.sub(r"([A-Za-z0-9_\u4e00-\u9fff']+)!\$?([A-Z]{1,3}\$?\d+)",
-                      ref_sub, expr)
-        # 裸引用（同表）
-        expr = re.sub(r"(?<![A-Za-z0-9_'\"])\$?([A-Z]{1,3})\$?(\d+)",
-                      lambda m: str(cell_val(sheet, m.group(1) + m.group(2))),
-                      expr)
-        return expr
-
-    def _split_sum_args(arg: str):
-        parts = arg.split(":")
-        if len(parts) == 2:
-            return parts[0].strip(), parts[1].strip()
-        return arg, arg
-
-    def _eval_formula(raw: str, sheet: str, depth: int = 0):
-        if depth > 6:
+    def _eval_formula(raw, sheet, depth):
+        if depth > 8:
             return 0.0
         expr = raw.lstrip("=").strip()
-        # IF(cond,a,b) → (a if cond else b)
         m = re.match(r"(?is)^IF\((.*)\)$", expr)
         if m:
             inner = m.group(1)
-            parts, depth_par, cur = [], 0, ""
+            parts, dp, cur = [], 0, ""
             for ch in inner:
                 if ch == "(":
-                    depth_par += 1
+                    dp += 1
                 elif ch == ")":
-                    depth_par -= 1
-                if ch == "," and depth_par == 0:
-                    parts.append(cur); cur = ""
+                    dp -= 1
+                if ch == "," and dp == 0:
+                    parts.append(cur)
+                    cur = ""
                 else:
                     cur += ch
             parts.append(cur)
@@ -1097,59 +1016,82 @@ def evaluate_checks(tpl_path: Path, filled_path: Path) -> List[str]:
                 cond = _eval_formula("=" + parts[0], sheet, depth + 1)
                 branch = parts[1] if cond else parts[2]
                 return _eval_formula("=" + branch, sheet, depth + 1)
-        expr = _refs(expr, sheet, depth)
-        expr = expr.replace("<>", "!=").replace("=", "==")
-        expr = re.sub(r"(?<![<>!])(?<![=!])=(?!=)", "==", expr)
-        expr = re.sub(r"\bABS\(", "abs((", expr)
-        # 补右括号由 eval 报错兜底（简单公式足够）
-        if not re.fullmatch(r"[-+*/%().,\s\d.:'\"A-Za-z_!=\u4e00-\u9fff]*", expr):
-            raise ValueError("unsupported")
-        allowed = {"abs": abs, "min": min, "max": max, "round": round}
-        return eval(expr.replace("\\", ""), {"__builtins__": {}}, allowed)  # noqa: S307
+        expr = _expand_sum(expr, sheet)
 
-    ws_check = wb[CHECK_SHEET]
-    for row in ws_check.iter_rows():
-        for cell in row:
-            v = cell.value
-            if not (isinstance(v, str) and v.startswith("=")):
-                continue
-            label = str(ws_check.cell(row=cell.row, column=1).value or
-                        f"公式 {cell.coordinate}").strip()
-            try:
-                res = _eval_formula(v, CHECK_SHEET)
-            except Exception:
-                out.append(f"{label}：公式较复杂，请在 Excel 中查看（{v}）")
-                continue
-            bad = False
-            if isinstance(res, str):
-                bad = bool(res.strip()) and res.strip() not in ("True", "OK")
-            elif isinstance(res, (int, float)):
-                bad = abs(float(res)) > 1e-6
-            elif isinstance(res, bool):
-                bad = not res
-            if bad:
-                out.append(f"{label}：勾稽不符（{v} → {res}）")
+        def ref_sub(m):
+            sh = (m.group(1) or sheet).strip("'")
+            return str(cell_val(sh, m.group(2).replace("$", "")))
 
-    # 逐行勾稽表：统计不平行（差额 = 上期借-贷 + 本期发生借-贷 - 期末借-贷）
-    if BALANCE_SHEET in wb.sheetnames:
-        ws_bal = wb[BALANCE_SHEET]
-        bad_rows = []
-        for row in ws_bal.iter_rows(min_row=2):
-            formula = row[3].value if len(row) > 3 else None
-            if not (isinstance(formula, str) and formula.startswith("=")):
-                continue
-            try:
-                res = _eval_formula(formula, BALANCE_SHEET)
-            except Exception:
-                continue
-            if isinstance(res, (int, float)) and abs(float(res)) > 0.01:
-                code = str(row[2].value if len(row) > 2 else "")
-                bad_rows.append((code, float(res)))
-        if bad_rows:
-            head = "；".join(f"{c or '合计/空'} 差{abs(v):,.2f}"
-                             for c, v in bad_rows[:4])
-            out.append(f"逐行勾稽不平 {len(bad_rows)} 行：{head}"
-                       + ("…" if len(bad_rows) > 4 else "")
-                       + "（见「勾稽」表，可对差额列加条件格式）")
+        expr = re.sub(
+            "([A-Za-z0-9_\u4e00-\u9fff']*)!\\$?([A-Z]{1,3}\\$?\\d+)",
+            ref_sub, expr)
+        expr = re.sub(
+            "(?<![A-Za-z0-9_'\"\\)])\\$?([A-Z]{1,3})\\$?(\\d+)",
+            lambda m: str(cell_val(sheet, m.group(1) + m.group(2))),
+            expr)
+        # 顺序关键：先 <> 再单独 =，避免把 != 变成 !==
+        expr = expr.replace("<>", "!=")
+        expr = re.sub(r"(?<![<>!=])=(?!=)", "==", expr)
+        expr = re.sub(r"(?i)\bSUM\(", "sumargs(", expr)
+        expr = re.sub(r"(?i)\bMIN\(", "minargs(", expr)
+        expr = re.sub(r"(?i)\bMAX\(", "maxargs(", expr)
+        expr = re.sub(r"(?i)\bABS\(", "abs(", expr)
+        expr = re.sub(r"(?i)\bROUND\(", "round(", expr)
+        allowed = {"abs": abs, "round": round, "sumargs": _sumargs,
+                   "minargs": _minargs, "maxargs": _maxargs}
+        return eval(expr, {"__builtins__": {}}, allowed)  # noqa: S307
+
+    try:
+        from openpyxl.worksheet.cell_range import CellRange
+    except Exception:
+        wb.close()
+        return out
+
+    for ws in wb.worksheets:
+        if ws.title in (CHECK_SHEET, GEO_SHEET, BALANCE_SHEET):
+            continue
+        if sheets and ws.title not in sheets:
+            continue
+        try:
+            cf_list = list(ws.conditional_formatting)
+        except Exception:
+            continue
+        for cf in cf_list:
+            for rule in cf.rules:
+                try:
+                    if rule.type != "expression" or not rule.formula:
+                        continue
+                    tpl_formula = str(rule.formula[0])
+                    refs = str(cf.sqref).split()
+                    if not refs:
+                        continue
+                    anchor = CellRange(refs[0])
+                    arow, acol = anchor.min_row, anchor.min_col
+                    bad = []
+                    for rng in refs:
+                        cr = CellRange(rng)
+                        for rr in range(cr.min_row, cr.max_row + 1):
+                            for cc in range(cr.min_col, cr.max_col + 1):
+                                inst = _instantiate_cf(tpl_formula, arow, acol,
+                                                       rr, cc)
+                                try:
+                                    res = _eval_formula("=" + inst, ws.title, 0)
+                                except Exception:
+                                    continue
+                                if res is True:
+                                    bad.append((rr, cc))
+                    if bad:
+                        labels = []
+                        for (rr, _cc) in bad[:6]:
+                            code = ws.cell(row=rr, column=1).value
+                            name = ws.cell(row=rr, column=2).value
+                            tag = " ".join(str(x) for x in (code, name) if x)
+                            labels.append("第%d行" % rr
+                                          + ("[%s]" % tag if tag else ""))
+                        out.append("%s 勾稽不平 %d 行：%s%s（模板条件格式标红处，请核对）"
+                                   % (ws.title, len(bad), "；".join(labels),
+                                      "…" if len(bad) > 6 else ""))
+                except Exception:
+                    continue
     wb.close()
     return out

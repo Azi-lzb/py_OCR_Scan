@@ -747,7 +747,8 @@ function initTemplateUI(){
     api("set_page_template", idx, val).then(function(st){
       S = st; render();
       var im = (idx >= 0 && S.images[idx]) || null;
-      var hint = val === "__none__" ? "本页不使用模板" : (val ? "已指定模板：" + val : "已恢复自动匹配");
+      var hint = val === "__none__" ? "本页不使用模板"
+               : (val ? "已指定：" + val.replace("::", " · ") : "已恢复自动匹配");
       if(im && (im.status === "完成" || im.status === "失败")){
         api("reprocess_page", idx).then(function(){ poll(); });
         toast(hint + "，正在重新识别…");
@@ -1041,19 +1042,11 @@ function maybePromptRowMismatch(){
   (mm.extra || []).slice(0, 4).forEach(function(e){
     lines.push("· 照片第" + (e[0]+1) + "行 [" + (e[1]||"") + "] 模板未包含（已忽略）");
   });
-  var msg = "行对齐提示（防止数值填错行）：
-
-"
-    + lines.join("
-")
-    + "
-
-当前已按【科目代码/名称】对齐填充（推荐）。"
-    + "
-
-点【确定】= 改为按位置强制填充（仅在对齐明显有误时使用，可能串行）"
-    + "
-点【取消】= 保留当前按科目对齐的结果";
+  var msg = "行对齐提示（防止数值填错行）：\n\n"
+    + lines.join("\n")
+    + "\n\n当前已按【科目代码/名称】对齐填充（推荐）。"
+    + "\n\n点【确定】= 改为按位置强制填充（仅在对齐明显有误时使用，可能串行）"
+    + "\n点【取消】= 保留当前按科目对齐的结果";
   if(confirm(msg)){
     api("set_page_fill_mode", idx, "position").then(function(){
       api("reprocess_page", idx).then(function(ok){ if(ok) poll(); });
@@ -1061,20 +1054,45 @@ function maybePromptRowMismatch(){
   }
 }
 
-/* 当前页模板选择器同步 */
+/* 当前页模板选择器同步（文档 + 各页选项：可指定到具体 sheet） */
+var tplPagesCache = {};
 function syncPageTemplateUI(){
   var sel = $("selPageTpl");
   if(!sel) return;
   var names = S.templates || [];
   var key = names.join("|");
   if(sel.dataset.key !== key){
-    var opts = '<option value="">自动匹配</option><option value="__none__">不使用模板</option>';
-    names.forEach(function(n){ opts += '<option value="'+esc(n)+'">'+esc(n)+'</option>'; });
-    sel.innerHTML = opts;
     sel.dataset.key = key;
+    sel.innerHTML = '<option value="">自动匹配</option><option value="__none__">不使用模板</option>';
+    names.forEach(function(n){
+      var og = document.createElement("optgroup");
+      og.label = n;
+      var o1 = document.createElement("option");
+      o1.value = n; o1.textContent = n + "（自动路由到对应页）";
+      og.appendChild(o1);
+      var pages = tplPagesCache[n];
+      if(!pages){
+        api("get_template_pages", n).then(function(list){
+          tplPagesCache[n] = list || [];
+          sel.dataset.key = "";        // 触发重建
+          syncPageTemplateUI();
+        }).catch(function(){ tplPagesCache[n] = []; });
+      } else {
+        pages.forEach(function(pg){
+          var o = document.createElement("option");
+          o.value = n + "::" + pg;
+          o.textContent = "　└ 指定页：" + pg;
+          og.appendChild(o);
+        });
+      }
+      sel.appendChild(og);
+    });
   }
   var cur = (S.current >= 0 && S.images[S.current]) || null;
-  var want = (cur && cur.template_name) || "";
+  var want = "";
+  if(cur && cur.template_name){
+    want = cur.template_name + (cur.template_page ? "::" + cur.template_page : "");
+  }
   if(sel.value !== want && document.activeElement !== sel) sel.value = want;
 }
 

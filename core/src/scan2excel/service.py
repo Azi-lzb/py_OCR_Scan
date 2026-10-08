@@ -131,6 +131,7 @@ class Scan2ExcelService:
                       ignore_regions: Optional[List[Dict]] = None,
                       templates: Optional[List] = None,
                       template_name: str = "",
+                      template_page: str = "",
                       fill_mode: str = "vlookup") -> TablePage:
         name = os.path.splitext(os.path.basename(path))[0]
         page = TablePage(path=path, name=name)
@@ -185,7 +186,8 @@ class Scan2ExcelService:
                     if templates:
                         applied = self._try_template(page, structure, templates,
                                                      template_name, on_step,
-                                                     per_cell, fill_mode)
+                                                     per_cell, fill_mode,
+                                                     template_page)
                     if not applied:
                         self._recognize_title(page, structure, on_step)
                         self._build_grid(page, structure)
@@ -489,7 +491,8 @@ class Scan2ExcelService:
                       templates: List, template_name: str,
                       on_step: Optional[StepCallback],
                       per_cell: Optional[Dict] = None,
-                      fill_mode: str = "vlookup") -> bool:
+                      fill_mode: str = "vlookup",
+                      template_page: str = "") -> bool:
         """月计表模板模式：命中模板则只 OCR 数值列（行列与科目文本冻结）。
 
         指定了 template_name 时强制使用该模板（仍校验，不匹配只告警）；
@@ -507,7 +510,7 @@ class Scan2ExcelService:
             doc, tpl_page, score, note, cells = match_xlsx_template(
                 xlsx_tpls, structure,
                 len(structure.ys) - 1, len(structure.xs) - 1,
-                force_doc=template_name)
+                force_doc=template_name, force_page=template_page)
             if doc is not None:
                 self._step(on_step, f"套用 xlsx 模板：{doc.name}·{tpl_page.page_name}"
                                      f"（结构区命中 {score:.0%}，"
@@ -519,10 +522,13 @@ class Scan2ExcelService:
                 page.template_file = str(doc.path)
                 page.template_page = tpl_page.page_name
                 if mismatch and (mismatch.get("unmatched") or mismatch.get("extra")):
-                    n_bad = len(mismatch.get("unmatched") or []) + len(mismatch.get("extra") or [])
+                    n_bad = (len(mismatch.get("unmatched") or [])
+                             + len(mismatch.get("extra") or []))
                     self._step(on_step, f"行对齐：{mismatch.get('matched', 0)} 行匹配，"
                                          f"{n_bad} 行需人工确认")
-                base = [f"{w}" for w in warns if w]
+                base = [w for w in warns if w]
+                if note:      # 指定页低命中率等告警
+                    base.append(note)
                 extra = self._run_check_formulas(doc, page)
                 if extra:
                     base.extend(extra)
@@ -576,7 +582,7 @@ class Scan2ExcelService:
             with tempfile.TemporaryDirectory() as td:
                 out = Path(td) / "filled.xlsx"
                 fill_template_workbook(tpl_path, {page_name: page}, out)
-                return evaluate_checks(tpl_path, out)
+                return evaluate_checks(tpl_path, out, sheets=[page_name])
         except Exception:
             return []
 
