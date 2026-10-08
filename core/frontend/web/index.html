@@ -183,7 +183,10 @@ header .spacer{flex:1;}
 .tpl-lib-cols{display:flex; align-items:center; gap:8px 10px; flex-wrap:wrap; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:9px 14px; font-size:12.5px;}
 .tpl-col-chip{display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border:1px solid var(--border); border-radius:999px; background:var(--surface-2); color:var(--text-2); cursor:pointer; font-size:12px; user-select:none;}
 .tpl-col-chip:hover{border-color:var(--accent-border-strong);}
-.tpl-col-chip input{accent-color:var(--accent); cursor:pointer;}
+.tpl-col-chip input[type=checkbox]{accent-color:var(--accent); cursor:pointer;}
+.tpl-col-label{width:104px; border:none; background:transparent; font:inherit; font-size:12px; color:var(--text); padding:0 2px; border-bottom:1px dashed transparent;}
+.tpl-col-label:hover{border-bottom-color:var(--border-strong);}
+.tpl-col-label:focus{outline:none; border-bottom-color:var(--accent); background:var(--surface);}
 .tpl-lib-note{color:var(--text-3); font-size:11.5px; line-height:1.6;}
 .tpl-lib-tablewrap{background:var(--img-bg); border:1px solid var(--border); border-radius:12px; overflow:auto; max-height:44vh;}
 table.tpl-grid td{min-width:76px;}
@@ -860,23 +863,41 @@ function renderTplLibEditor(){
     + '<span class="tpl-lib-note">前 N 行整行冻结</span></div>';
 
   html += '<div class="tpl-lib-cols"><span class="tpl-pick-label">数值列（每月 OCR）</span>';
+  var labels = pg.col_labels || [];
   for(var c=0;c<nC;c++){
-    var head = "";
-    for(var r=0;r<Math.max(1, pg.header_rows||0);r++){
-      if(pg.rows[r] && pg.rows[r][c]) head = pg.rows[r][c];
+    var lab = labels[c] || "";
+    if(!lab){
+      for(var r=0;r<Math.max(1, pg.header_rows||0);r++){
+        if(pg.rows[r] && pg.rows[r][c]) lab = pg.rows[r][c];
+      }
     }
-    html += '<label class="tpl-col-chip"><input type="checkbox" data-col="'+c+'"'+(vcSet[c]?' checked':'')+'>'
-      + esc(head || ("列"+(c+1))) + '</label>';
+    html += '<span class="tpl-col-chip"><input type="checkbox" data-col="'+c+'"'+(vcSet[c]?' checked':'')+'>'
+      + '<input class="tpl-col-label" data-lab="'+c+'" value="'+esc(lab || ("列"+(c+1)))+'" title="列名（两级表头：组·子，可直接修改）">'
+      + '</span>';
   }
-  html += '<span class="tpl-lib-note" style="margin-left:auto">灰斜体格=每月覆盖的数值位 · 白格=冻结文本（点击即可编辑修正）</span></div>';
+  html += '<span class="tpl-lib-note" style="margin-left:auto">勾选=每月 OCR 的数值列 · 列名可直接编辑（如 上期余额·借方）</span></div>';
 
+  var used = {};
+  (pg.merges||[]).forEach(function(m){
+    for(var rr=m[0]; rr<m[0]+m[2]; rr++) for(var cc=m[1]; cc<m[1]+m[3]; cc++)
+      if(!(rr===m[0]&&cc===m[1])) used[rr+","+cc]=1;
+  });
   html += '<div class="tpl-lib-tablewrap"><table class="grid tpl-grid"><tbody>';
   for(var r2=0;r2<nR;r2++){
     html += '<tr'+(r2 < (pg.header_rows||0) ? ' class="head"' : '')+'>';
     for(var c2=0;c2<nC;c2++){
+      if(used[r2+","+c2]) continue;
+      var span = "", isMerged = false;
+      (pg.merges||[]).forEach(function(m){
+        if(m[0]===r2 && m[1]===c2 && (m[2]>1||m[3]>1)){
+          span = ' rowspan="'+m[2]+'" colspan="'+m[3]+'"'; isMerged = true;
+        }
+      });
       var v = (pg.rows[r2] && pg.rows[r2][c2]) || "";
-      var isVal = vcSet[c2] && r2 >= (pg.header_rows||0);
-      html += '<td data-r="'+r2+'" data-c="'+c2+'"'+(isVal?' class="tpl-valcell"':'')+' contenteditable="true">'+esc(v)+'</td>';
+      var isVal = vcSet[c2] && r2 >= (pg.header_rows||0) && !isMerged;
+      html += '<td data-r="'+r2+'" data-c="'+c2+'"'+span
+        + (isMerged?' style="text-align:center"':'')
+        + (isVal?' class="tpl-valcell"':'')+' contenteditable="true">'+esc(v)+'</td>';
     }
     html += '</tr>';
   }
@@ -920,23 +941,29 @@ function renderTplLibEditor(){
 
 function saveTplDetail(){
   if(!tplLibDetail) return;
+  var pg = tplLibDetail.pages[tplLibPageIdx];
+  var nR = pg.rows.length, nC = pg.rows[0] ? pg.rows[0].length : 0;
+  // 矩阵定位：合并格覆盖位留空（按 data-r/data-c 放置，避免顺序错位）
   var rows = [];
-  Array.prototype.forEach.call(document.querySelectorAll("#tplLibEditor .tpl-grid tr"), function(tr){
-    var arr = [];
-    Array.prototype.forEach.call(tr.querySelectorAll("td"), function(td){
-      arr.push(td.innerText.replace(/ /g," ").trim());
-    });
-    rows.push(arr);
+  for(var r=0;r<nR;r++) rows.push(new Array(nC).fill(""));
+  Array.prototype.forEach.call(document.querySelectorAll("#tplLibEditor .tpl-grid td[data-r]"), function(td){
+    var r = parseInt(td.dataset.r, 10), c = parseInt(td.dataset.c, 10);
+    if(r < nR && c < nC) rows[r][c] = td.innerText.replace(/ /g," ").trim();
   });
   var vc = [];
   Array.prototype.forEach.call(document.querySelectorAll("#tplLibEditor input[data-col]"), function(cb){
     if(cb.checked) vc.push(parseInt(cb.dataset.col, 10));
+  });
+  var colLabels = [];
+  Array.prototype.forEach.call(document.querySelectorAll("#tplLibEditor input[data-lab]"), function(inp){
+    colLabels.push(inp.value);
   });
   var patchData = {
     page_index: tplLibPageIdx,
     page_name: (($("tplPageNameIn")||{}).value || ""),
     rows: rows,
     value_cols: vc,
+    col_labels: colLabels,
     header_rows: parseInt((($("tplHeaderIn")||{}).value || "0"), 10),
     new_name: (($("tplNameIn")||{}).value || "")
   };

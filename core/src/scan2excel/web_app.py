@@ -145,9 +145,8 @@ class WebApi:
             raise RuntimeError("该页缺少网格信息，无法生成模板（仅支持有框线表格页）")
         name = (name or "").strip() or f"模板{len(self._templates) + 1}"
         from .template_mode import TableTemplate, build_page_from_result
-        tpl_page = build_page_from_result(f"第{len(self._templates) + 1}页"
-                                          if True else "第1页",
-                                          page.rows, page.xs, page.ys)
+        tpl_page = build_page_from_result("第1页", page.rows, page.xs, page.ys,
+                                          merges=page.merges)
         # 同名文档：追加为新页；否则新建文档（首月正常建一次，以后每月换版式才需要加页）
         doc = next((t for t in self._templates if t.name == name), None)
         if doc is not None:
@@ -246,6 +245,9 @@ class WebApi:
         if patch_data.get("code_col") is not None:
             cc = int(patch_data["code_col"])
             pg.code_col = max(0, min(cc, pg.n_cols - 1))
+        if isinstance(patch_data.get("col_labels"), list):
+            labels = [str(x) for x in patch_data["col_labels"]]
+            pg.col_labels = (labels + [""] * pg.n_cols)[:pg.n_cols]
         new_page_name = str(patch_data.get("page_name") or "").strip()
         if new_page_name and new_page_name != pg.page_name:
             old_pv = self._templates_dir / f"{self._tpl_safe(doc.name)}_{pg.page_name}.jpg"

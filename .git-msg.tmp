@@ -1,0 +1,11 @@
+模板支持多行表头：组名经合并格推导为语义列名，套用传递表头合并
+
+- template_mode：build_page_from_result 修复多行表头识别（组标题行代码列
+  为空也能判），新增 _derive_header_labels——组标题（上期余额等）按 merges
+  跨列展开后与子表头拼为语义列名（上期余额·借方）；TemplatePage 增加
+  col_labels/merges 并随套用写入 page.merges（导出 Excel 表头正确合并）
+- WebApi：save 传 merges、update_template 接受 col_labels
+- 前端：数值列 chip 改为"勾选 + 可编辑列名"，模板表格渲染表头合并格，
+  保存改为矩阵定位（合并格覆盖位留空，避免顺序错位）
+- 实测：两级表头推导（上期余额·借方…8 列全对）、模板库显示合并表头、
+  套用传递 merges；全量回归 11/11 + 15/15

@@ -59,6 +59,12 @@ class TemplatePage:
     value_cols: List[int] = field(default_factory=list)
     code_col: int = 0
     header_rows: int = 0
+    # 逐列显示名（两级表头合并后的语义名，如 "上期余额·借方"），
+    # 供界面 chip 标签与导出表头使用；用户可在模板库直接编辑
+    col_labels: List[str] = field(default_factory=list)
+    # 冻结区的合并单元格 [[r,c,rspan,cspan],...]（两级表头的组标题跨列），
+    # 套用时带入结果，导出 Excel 才会显示正确的合并表头
+    merges: List[List[int]] = field(default_factory=list)
 
     @property
     def n_cols(self) -> int:
@@ -73,7 +79,9 @@ class TemplatePage:
                 "col_fracs": [round(f, 5) for f in self.col_fracs],
                 "row_fracs": [round(f, 5) for f in self.row_fracs],
                 "value_cols": self.value_cols, "code_col": self.code_col,
-                "header_rows": self.header_rows}
+                "header_rows": self.header_rows,
+                "col_labels": self.col_labels,
+                "merges": [list(m) for m in self.merges]}
 
     @staticmethod
     def from_dict(d: Dict) -> "TemplatePage":
@@ -85,6 +93,8 @@ class TemplatePage:
             value_cols=[int(c) for c in d.get("value_cols", [])],
             code_col=int(d.get("code_col", 0)),
             header_rows=int(d.get("header_rows", 0)),
+            col_labels=[str(x) for x in d.get("col_labels", [])],
+            merges=[[int(v) for v in m] for m in d.get("merges", [])],
         )
 
     def codes(self) -> List[str]:
@@ -166,11 +176,51 @@ class TableTemplate:
 
 
 # ---------------------------------------------------------------------- #
+def _derive_header_labels(rows: List[List[str]], header_rows: int,
+                          n_cols: int, merges: List[List[int]]) -> List[str]:
+    """由多行表头推导逐列语义名：合并组标题（如"上期余额"跨借方/贷方）
+    经 merges 展开到被覆盖列，再与子表头（借/贷方）拼接为"组·子"。
+
+    没有 merges 信息时退化为简单拼接（用户可在模板库手工修正）。
+    """
+    if header_rows <= 0:
+        return ["" for _ in range(n_cols)]
+    # 表头文本矩阵：先填非合并值，再用合并锚点覆盖被跨列
+    htext = [["" for _ in range(n_cols)] for _ in range(header_rows)]
+    for r in range(header_rows):
+        for c in range(n_cols):
+            htext[r][c] = str(rows[r][c] or "").strip()
+    for m in merges or []:
+        try:
+            r, c, rspan, cspan = (int(v) for v in m)
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= r < header_rows and cspan > 1):
+            continue
+        anchor = str(rows[r][c] if r < len(rows) and c < len(rows[r]) else "").strip()
+        if not anchor:
+            continue
+        for cc in range(c + 1, min(n_cols, c + cspan)):
+            for rr in range(r, min(header_rows, r + max(1, rspan))):
+                htext[rr][cc] = anchor
+    labels: List[str] = []
+    for c in range(n_cols):
+        parts: List[str] = []
+        for r in range(header_rows):
+            t = htext[r][c].replace(" ", "")
+            if t and (not parts or parts[-1] != t):
+                parts.append(t)
+        labels.append("·".join(parts))
+    return labels
+
+
 def build_page_from_result(page_name: str, rows: List[List[str]],
-                           xs: List[int], ys: List[int]) -> TemplatePage:
+                           xs: List[int], ys: List[int],
+                           merges: Optional[List[List[int]]] = None) -> TemplatePage:
     """从一页已校对好的识别结果生成模板页。
 
-    rows 为整页文本；xs/ys 为该页的列/行边界像素坐标（表格内）。
+    rows 为整页文本；xs/ys 为该页的列/行边界像素坐标；
+    merges 为该页识别出的合并格（两级表头的组标题跨列信息由此而来）。
     """
     n_cols = max(len(r) for r in rows)
     rows = [list(r) + [""] * (n_cols - len(r)) for r in rows]
@@ -190,13 +240,14 @@ def build_page_from_result(page_name: str, rows: List[List[str]],
                   if code_values[i] and _codes_match(v, code_values[i]))
         return dup / len(vals) >= 0.7
 
+    # 多行表头：开头连续、科目代码列为空或非数字的行（两级表头常有
+    # 一行组标题：代码列为空，组名在中间列）——最多 4 行，防误判
     header_rows = 0
-    for r in rows:
+    for r in rows[:4]:
         code = _norm_code((r[0] or ""))
-        if code and not code.isdigit():
-            header_rows += 1
-        else:
+        if code and code.isdigit():
             break
+        header_rows += 1
 
     def looks_texty(v: str) -> bool:
         if _is_numeric_text(v):
@@ -214,9 +265,13 @@ def build_page_from_result(page_name: str, rows: List[List[str]],
             continue
         value_cols.append(c)
 
+    merges_list = [[int(v) for v in m] for m in (merges or [])]
+    col_labels = _derive_header_labels(rows, header_rows, n_cols, merges_list)
+
     return TemplatePage(page_name=page_name, rows=rows, col_fracs=col_fracs,
                         row_fracs=row_fracs, value_cols=value_cols,
-                        code_col=0, header_rows=header_rows)
+                        code_col=0, header_rows=header_rows,
+                        col_labels=col_labels, merges=merges_list)
 
 
 # ---------------------------------------------------------------------- #
@@ -323,7 +378,9 @@ def apply_template(page, structure, tpl_page: TemplatePage, engine,
     page.mode = "table"
     page.borderless = False
     page.rows = out_rows
-    page.merges = []
+    # 带入冻结区合并格（两级表头组标题跨列），导出 Excel 才有正确的合并表头
+    page.merges = [list(m) for m in (tpl_page.merges or [])
+                   if int(m[0]) < tpl_page.header_rows]
     page.n_rows, page.n_cols = n_rows, n_cols
     page.template = (f"{doc_name}·{tpl_page.page_name}" if doc_name
                      else tpl_page.page_name)
