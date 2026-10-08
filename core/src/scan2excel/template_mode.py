@@ -65,6 +65,10 @@ class TemplatePage:
     # 冻结区的合并单元格 [[r,c,rspan,cspan],...]（两级表头的组标题跨列），
     # 套用时带入结果，导出 Excel 才会显示正确的合并表头
     merges: List[List[int]] = field(default_factory=list)
+    # ---- 表内中缝插入的第二段表头（如月计表下半段"收方/付方"） ----
+    # 该行起是第二段：本行是它的表头行，之后是数据行。列结构与上半段
+    # 相同，仅栏名不同（借/贷方 vs 收/付方）；-1 表示无中缝段。
+    mid_section_row: int = -1
 
     @property
     def n_cols(self) -> int:
@@ -81,7 +85,8 @@ class TemplatePage:
                 "value_cols": self.value_cols, "code_col": self.code_col,
                 "header_rows": self.header_rows,
                 "col_labels": self.col_labels,
-                "merges": [list(m) for m in self.merges]}
+                "merges": [list(m) for m in self.merges],
+                "mid_section_row": self.mid_section_row}
 
     @staticmethod
     def from_dict(d: Dict) -> "TemplatePage":
@@ -95,6 +100,7 @@ class TemplatePage:
             header_rows=int(d.get("header_rows", 0)),
             col_labels=[str(x) for x in d.get("col_labels", [])],
             merges=[[int(v) for v in m] for m in d.get("merges", [])],
+            mid_section_row=int(d.get("mid_section_row", -1)),
         )
 
     def codes(self) -> List[str]:
@@ -214,6 +220,52 @@ def _derive_header_labels(rows: List[List[str]], header_rows: int,
     return labels
 
 
+def _detect_mid_section(rows: List[List[str]], header_rows: int,
+                        n_cols: int, code_col: int = 0) -> int:
+    """检测表内中缝插入的第二段表头行；没有返回 -1。
+
+    形态：数据区进行中，先遇到"合计"行（合计在非代码列），再遇到
+    代码列/名称列写有"科目代码/科目名称"的表头行——该行即中缝表头。
+    """
+    seen_data = False
+    total_row = -1
+    for r in range(header_rows, len(rows)):
+        cells = [str(c or "").strip() for c in rows[r]]
+        has_code = bool(_DIGITS.search(cells[code_col] if code_col < len(cells) else ""))
+        row_join = "".join(cells)
+        if has_code:
+            seen_data = True
+            continue
+        if seen_data and "合计" in row_join:
+            total_row = r
+            continue
+        # 代码列非数字但写着"科目"类字样 → 中缝表头行
+        if total_row >= 0 and ("科目代码" in row_join or "科目名称" in row_join):
+            return r
+    return -1
+
+
+def _derive_mid_labels(rows: List[List[str]], header_rows: int,
+                       mid_row: int, n_cols: int,
+                       merges: List[List[int]]) -> List[str]:
+    """中缝段列名：上半段的组标题（上期余额等）+ 中缝子表头（收方/付方）。
+
+    组标题仍来自 0..header_rows-1 的合并展开，子表头取中缝行文本。
+    """
+    group = _derive_header_labels(rows, header_rows, n_cols, merges or [])
+    labels: List[str] = []
+    for c in range(n_cols):
+        leaf = str(rows[mid_row][c] or "").strip() if mid_row < len(rows)             and c < len(rows[mid_row]) else ""
+        g = group[c] if c < len(group) else ""
+        # 组标题本身含"·"时取其组段（如 上期余额·借方 → 上期余额）
+        g_head = g.split("·")[0] if g else ""
+        if leaf and g_head and leaf != g_head:
+            labels.append(f"{g_head}·{leaf}")
+        else:
+            labels.append(leaf or g)
+    return labels
+
+
 def build_page_from_result(page_name: str, rows: List[List[str]],
                            xs: List[int], ys: List[int],
                            merges: Optional[List[List[int]]] = None) -> TemplatePage:
@@ -267,11 +319,13 @@ def build_page_from_result(page_name: str, rows: List[List[str]],
 
     merges_list = [[int(v) for v in m] for m in (merges or [])]
     col_labels = _derive_header_labels(rows, header_rows, n_cols, merges_list)
+    mid_section_row = _detect_mid_section(rows, header_rows, n_cols)
 
     return TemplatePage(page_name=page_name, rows=rows, col_fracs=col_fracs,
                         row_fracs=row_fracs, value_cols=value_cols,
                         code_col=0, header_rows=header_rows,
-                        col_labels=col_labels, merges=merges_list)
+                        col_labels=col_labels, merges=merges_list,
+                        mid_section_row=mid_section_row)
 
 
 # ---------------------------------------------------------------------- #
@@ -335,8 +389,10 @@ def apply_template(page, structure, tpl_page: TemplatePage, engine,
     n_cols = tpl_page.n_cols
     out_rows: List[List[str]] = [list(r) for r in tpl_page.rows]
 
+    mid_row = tpl_page.mid_section_row
     for r in range(n_rows):
-        if r < tpl_page.header_rows:
+        # 顶部表头与中缝表头行整行冻结（模板文本），不参与 OCR
+        if r < tpl_page.header_rows or r == mid_row:
             continue
         for c in tpl_page.value_cols:
             if c >= n_cols or r >= len(out_rows):

@@ -877,6 +877,25 @@ function renderTplLibEditor(){
   }
   html += '<span class="tpl-lib-note" style="margin-left:auto">勾选=每月 OCR 的数值列 · 列名可直接编辑（如 上期余额·借方）</span></div>';
 
+  // 中缝段（表内插入的第二段表头，如"收方/付方"）
+  var midRow = (typeof pg.mid_section_row === "number") ? pg.mid_section_row : -1;
+  html += '<div class="tpl-lib-cols"><span class="tpl-pick-label">中缝表头行</span>'
+    + '<input id="tplMidIn" type="number" class="gen-input" style="width:70px" min="-1" max="'+(nR-1)+'" value="'+midRow+'">'
+    + '<span class="tpl-lib-note">表内插入的第二段表头行号（-1=无）。该行整行冻结；其后为第二段数据，列结构相同、栏名不同。</span></div>';
+  if(midRow >= 0 && midRow < nR){
+    var mrows = pg.mid_section_row;
+    html += '<div class="tpl-lib-cols"><span class="tpl-pick-label">中缝段数值列</span>';
+    for(var c3=0;c3<nC;c3++){
+      var mlab = (pg.rows[midRow] && pg.rows[midRow][c3]) ? pg.rows[midRow][c3] : ("列"+(c3+1));
+      if(mlab === "科目代码" || mlab === "科目名称" || !mlab) continue;
+      var g = (labels[c3]||"").split("·")[0];
+      html += '<span class="tpl-col-chip"><input type="checkbox" disabled checked>'
+        + '<span class="tpl-lib-note" style="font-size:12px;color:var(--text)">'
+        + esc((g ? g + "·" : "") + mlab) + '</span></span>';
+    }
+    html += '<span class="tpl-lib-note" style="margin-left:auto">与上半段共用列（仅栏名不同），无需单独勾选</span></div>';
+  }
+
   var used = {};
   (pg.merges||[]).forEach(function(m){
     for(var rr=m[0]; rr<m[0]+m[2]; rr++) for(var cc=m[1]; cc<m[1]+m[3]; cc++)
@@ -965,6 +984,7 @@ function saveTplDetail(){
     value_cols: vc,
     col_labels: colLabels,
     header_rows: parseInt((($("tplHeaderIn")||{}).value || "0"), 10),
+    mid_section_row: parseInt((($("tplMidIn")||{}).value || "-1"), 10),
     new_name: (($("tplNameIn")||{}).value || "")
   };
   var oldName = tplLibDetail.name;

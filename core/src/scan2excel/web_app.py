@@ -248,6 +248,9 @@ class WebApi:
         if isinstance(patch_data.get("col_labels"), list):
             labels = [str(x) for x in patch_data["col_labels"]]
             pg.col_labels = (labels + [""] * pg.n_cols)[:pg.n_cols]
+        if patch_data.get("mid_section_row") is not None:
+            mr = int(patch_data["mid_section_row"])
+            pg.mid_section_row = max(-1, min(mr, pg.n_rows - 1))
         new_page_name = str(patch_data.get("page_name") or "").strip()
         if new_page_name and new_page_name != pg.page_name:
             old_pv = self._templates_dir / f"{self._tpl_safe(doc.name)}_{pg.page_name}.jpg"
