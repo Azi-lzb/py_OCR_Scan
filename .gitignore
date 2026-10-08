@@ -18,3 +18,5 @@
 # ==== 本地工具目录 ====
 /.zcode/
 /tests/data/**/*.xlsx
+/tests/**/_diag/
+/data/templates/
