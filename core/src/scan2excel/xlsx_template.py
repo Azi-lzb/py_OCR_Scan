@@ -133,27 +133,39 @@ class XlsxSheetPage:
     def value_cols(self) -> List[int]:
         return sorted({c for _r, c in self.num_cells})
 
-    def col_labels(self) -> List[str]:
-        """逐列显示名：表头行 0..header_rows-1 逐层拼接 + 中缝段补充。
+    def _header_text(self, r: int, c: int) -> str:
+        """表头文本（合并格取锚点文本并传播到被跨列）。"""
+        for m in self.merges:
+            try:
+                mr, mc, mrs, mcs = (int(x) for x in m)
+            except (TypeError, ValueError):
+                continue
+            if mr <= r < mr + mrs and mc <= c < mc + mcs:
+                if r < len(self.rows) and mc < len(self.rows[r]):
+                    return str(self.rows[r][mc] or "").strip()
+                return ""
+        if r < len(self.rows) and c < len(self.rows[r]):
+            return str(self.rows[r][c] or "").strip()
+        return ""
 
-        中缝段（收方/付方）与上半段共用列，标签并列为 "组·上半 / 组·中缝"。
-        """
+    def col_labels(self) -> List[str]:
+        """逐列显示名：表头行 0..header_rows-1 逐层拼接（合并格展开）
+        + 中缝段补充（组·收方/付方）。"""
         n = self.n_cols
         hr = self.header_rows
         labels: List[str] = []
         for c in range(n):
             parts: List[str] = []
             for r in range(hr):
-                t = str(self.rows[r][c] if c < len(self.rows[r]) else "").strip()
+                t = self._header_text(r, c)
                 if t and (not parts or parts[-1] != t):
                     parts.append(t)
             labels.append("·".join(parts))
-        # 中缝段标签
+        # 中缝段标签：叶子行（收方/付方）与上半段组名拼为 "上期余额·收方"
         if self.mid_rows:
-            mr = min(self.mid_rows)
+            mr = max(self.mid_rows)          # 叶子行（第二行表头）
             for c in range(n):
-                leaf = str(self.rows[mr][c] if mr < len(self.rows)
-                           and c < len(self.rows[mr]) else "").strip()
+                leaf = self._header_text(mr, c)
                 if leaf and leaf not in ("科目代码", "科目名称"):
                     group = labels[c].split("·")[0] if labels[c] else ""
                     labels[c] = (f"{group}·{leaf}" if group and group != leaf
@@ -226,7 +238,7 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
 
     tpl = XlsxTemplate(name=path.stem, path=path)
     for ws in wb.worksheets:
-        if ws.title == CHECK_SHEET:
+        if ws.title in (CHECK_SHEET, GEO_SHEET, BALANCE_SHEET):
             continue
         rows: List[List[str]] = []
         n_cols = 0
@@ -368,11 +380,23 @@ def save_sheet_to_workbook(path: Path, sheet_name: str, rows: List[List[str]],
     struct_cells = all_cells - num_cells
 
     def add_name(nm: str, cells: Set[Cell]) -> None:
+        """把本页单元格并入命名区域（多页共用同一名称，逗号分隔联合区域）。
+
+        注意必须"读旧值 + 追加"，否则第二页会整体覆盖第一页的区域。
+        """
         rects = cells_to_rects(cells)
         if not rects:
             return
+        parts = []
+        existing = wb.defined_names.get(nm)
+        if existing is not None and existing.attr_text:
+            parts.append(str(existing.attr_text))
+        parts.append(_rects_to_attr(name, rects))
+        attr = ",".join(x for x in parts if x)
         try:
-            wb.defined_names.add(DefinedName(nm, attr_text=_rects_to_attr(name, rects)))
+            if existing is not None:
+                del wb.defined_names[nm]
+            wb.defined_names.add(DefinedName(nm, attr_text=attr))
         except Exception:
             pass
 
@@ -444,10 +468,10 @@ def generate_balance_checks(path: Path, sheet_name: str,
     mr = int(getattr(pg, "mid_section_row", -1) or -1)
     if mr >= 0:
         mids.add(mr)
-    mid = min(mids) if mids else -1
-    if mid >= 0:
-        segs.append(("上段", pg.header_rows, mid, "借", "贷"))
-        segs.append(("中缝段", mid + 1, pg.n_rows, "收", "付"))
+    if mids:
+        mid_lo, mid_hi = min(mids), max(mids)   # 中缝表头可能占两行
+        segs.append(("上段", pg.header_rows, mid_lo, "借", "贷"))
+        segs.append(("中缝段", mid_hi + 1, pg.n_rows, "收", "付"))
     else:
         segs.append(("全表", pg.header_rows, pg.n_rows, "借", "贷"))
 
@@ -533,6 +557,16 @@ def geometry_page_cells(structure, pg: XlsxSheetPage):
         return {}
     left, right = xs[0], xs[-1]
     top, bottom = ys[0], ys[-1]
+    # 外框并上"文字内容框"：列/行线检测被截断（只检出左半）时，
+    # 用 det 文字的包围盒兜底，避免铺格整体压缩
+    items = getattr(structure, "det_items", None) or []
+    if items:
+        tx0 = min(min(pt[0] for pt in b) for b, _t, _s in items)
+        ty0 = min(min(pt[1] for pt in b) for b, _t, _s in items)
+        tx1 = max(max(pt[0] for pt in b) for b, _t, _s in items)
+        ty1 = max(max(pt[1] for pt in b) for b, _t, _s in items)
+        left, top = min(left, tx0), min(top, ty0)
+        right, bottom = max(right, tx1), max(bottom, ty1)
     col_x = [int(round(left + f * (right - left))) for f in pg.col_fracs]
     row_y = [int(round(top + f * (bottom - top))) for f in pg.row_fracs]
     cells = {}
@@ -698,9 +732,34 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
     H = structure.image.shape[0]
     W = structure.image.shape[1]
 
+    # 数字填充优先用"整表 det 的整体文本按中心落格"——det 把完整数字识别
+    # 成一条，避免按格裁切把数字切穿（如 1,983,687,343.16 → "…343." + "16"）；
+    # 该格没有 det 文本时才退回按格裁切识别
+    det_by_cell = {}
+    for box, text, score in (structure.det_items or []):
+        if not str(text).strip():
+            continue
+        cx = sum(pt[0] for pt in box) / len(box)
+        cy = sum(pt[1] for pt in box) / len(box)
+        for (r2, c2), (x, y, w, h) in cells.items():
+            if x <= cx < x + w and y <= cy < y + h:
+                det_by_cell.setdefault((r2, c2), []).append(
+                    (sum(pt[1] for pt in box) / len(box), cx, str(text), float(score)))
+                break
+
     for r in range(n_rows):
         for c in range(n_cols):
             if (r, c) not in tpl_page.num_cells:
+                continue
+            got = det_by_cell.get((r, c))
+            if got:
+                got.sort(key=lambda e: (e[0], e[1]))
+                text = "".join(t for _cy, _cx, t, _s in got)
+                score = min(s for _cy, _cx, _t, s in got)
+                out_rows[r][c] = text
+                if text:
+                    page.scores[f"{r},{c}"] = score
+                    page.min_score = min(page.min_score, score)
                 continue
             box = cells.get((r, c))
             if box is None:
