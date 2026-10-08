@@ -49,43 +49,110 @@ def _codes_match(a: str, b: str) -> bool:
 
 
 @dataclass
-class TableTemplate:
-    """一页固定格式表格的模板。"""
+class TemplatePage:
+    """模板文档中的一页（一种版式）：行列几何 + 冻结文本 + 数值列。"""
 
-    name: str
-    rows: List[List[str]]                 # 整页文本（表头+数据行，全部冻结）
-    col_fracs: List[float]                # n_cols+1 个列边界（0~1）
-    row_fracs: List[float]                # n_rows+1 个行边界（0~1）
-    value_cols: List[int] = field(default_factory=list)   # 需要逐月 OCR 的列
-    code_col: int = 0                     # 锚定校验用的科目代码列
-    header_rows: int = 0                  # 前 N 行视为表头（整行冻结）
+    page_name: str = "第1页"
+    rows: List[List[str]] = field(default_factory=list)
+    col_fracs: List[float] = field(default_factory=list)
+    row_fracs: List[float] = field(default_factory=list)
+    value_cols: List[int] = field(default_factory=list)
+    code_col: int = 0
+    header_rows: int = 0
 
-    # ------------------------------------------------------------------ #
     @property
     def n_cols(self) -> int:
-        return len(self.col_fracs) - 1
+        return max(0, len(self.col_fracs) - 1)
 
     @property
     def n_rows(self) -> int:
         return len(self.rows)
 
     def to_dict(self) -> Dict:
-        return {"name": self.name, "rows": self.rows,
+        return {"page_name": self.page_name, "rows": self.rows,
                 "col_fracs": [round(f, 5) for f in self.col_fracs],
                 "row_fracs": [round(f, 5) for f in self.row_fracs],
                 "value_cols": self.value_cols, "code_col": self.code_col,
                 "header_rows": self.header_rows}
 
     @staticmethod
-    def from_dict(d: Dict) -> "TableTemplate":
-        return TableTemplate(
-            name=str(d["name"]), rows=[list(r) for r in d["rows"]],
-            col_fracs=[float(f) for f in d["col_fracs"]],
-            row_fracs=[float(f) for f in d["row_fracs"]],
+    def from_dict(d: Dict) -> "TemplatePage":
+        return TemplatePage(
+            page_name=str(d.get("page_name", "第1页")),
+            rows=[list(r) for r in d.get("rows", [])],
+            col_fracs=[float(f) for f in d.get("col_fracs", [])],
+            row_fracs=[float(f) for f in d.get("row_fracs", [])],
             value_cols=[int(c) for c in d.get("value_cols", [])],
             code_col=int(d.get("code_col", 0)),
             header_rows=int(d.get("header_rows", 0)),
         )
+
+    def codes(self) -> List[str]:
+        """锚定匹配用的代码列（数据区）。"""
+        if self.code_col >= self.n_cols:
+            return []
+        vals = []
+        for r in self.rows[self.header_rows:]:
+            v = (r[self.code_col] if self.code_col < len(r) else "") or ""
+            if _DIGITS.search(v):
+                vals.append(v)
+        return vals
+
+
+@dataclass
+class TableTemplate:
+    """模板文档：一个固定格式报表（可含多页，各页版式不同）。"""
+
+    name: str
+    pages: List[TemplatePage] = field(default_factory=list)
+
+    # ---- 兼容旧单页字段的快捷访问（指向首页） ----
+    @property
+    def rows(self) -> List[List[str]]:
+        return self.pages[0].rows if self.pages else []
+
+    @property
+    def col_fracs(self) -> List[float]:
+        return self.pages[0].col_fracs if self.pages else []
+
+    @property
+    def row_fracs(self) -> List[float]:
+        return self.pages[0].row_fracs if self.pages else []
+
+    @property
+    def value_cols(self) -> List[int]:
+        return self.pages[0].value_cols if self.pages else []
+
+    @property
+    def header_rows(self) -> int:
+        return self.pages[0].header_rows if self.pages else 0
+
+    @property
+    def code_col(self) -> int:
+        return self.pages[0].code_col if self.pages else 0
+
+    @property
+    def n_rows(self) -> int:
+        return self.pages[0].n_rows if self.pages else 0
+
+    @property
+    def n_cols(self) -> int:
+        return self.pages[0].n_cols if self.pages else 0
+
+    # ------------------------------------------------------------------ #
+    def to_dict(self) -> Dict:
+        return {"name": self.name,
+                "pages": [pg.to_dict() for pg in self.pages]}
+
+    @staticmethod
+    def from_dict(d: Dict) -> "TableTemplate":
+        if d.get("pages"):
+            return TableTemplate(name=str(d["name"]),
+                                 pages=[TemplatePage.from_dict(pg)
+                                        for pg in d["pages"]])
+        # 旧版单页格式：整份文档即一页
+        return TableTemplate(name=str(d["name"]),
+                             pages=[TemplatePage.from_dict(d)])
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,13 +166,11 @@ class TableTemplate:
 
 
 # ---------------------------------------------------------------------- #
-def build_template_from_page(name: str, rows: List[List[str]],
-                             xs: List[int], ys: List[int],
-                             ys_page: Optional[List[int]] = None) -> TableTemplate:
-    """从一页已校对好的识别结果生成模板。
+def build_page_from_result(page_name: str, rows: List[List[str]],
+                           xs: List[int], ys: List[int]) -> TemplatePage:
+    """从一页已校对好的识别结果生成模板页。
 
     rows 为整页文本；xs/ys 为该页的列/行边界像素坐标（表格内）。
-    数值列自动判定：跳过代码列后，列内非空值 ≥70% 为数字的列。
     """
     n_cols = max(len(r) for r in rows)
     rows = [list(r) + [""] * (n_cols - len(r)) for r in rows]
@@ -113,10 +178,7 @@ def build_template_from_page(name: str, rows: List[List[str]],
     h = max(1, ys[-1] - ys[0])
     col_fracs = [(x - xs[0]) / w for x in xs]
     row_fracs = [(y - ys[0]) / h for y in ys]
-    # 数值列判定（排除法，比"多数为数字"稳健——借方/贷方列本月可能
-    # 多为空，稀疏数字列也必须纳入）：
-    #   排除 ①代码列 ②与代码列重复的列（左右双代码）③数据区以中文文本
-    #   为主的列（科目名称）；其余（含空列）全部作为数值列逐月 OCR。
+
     code_values = [(r[0] or "").strip() for r in rows]
 
     def is_dup_code_col(c: int) -> bool:
@@ -128,7 +190,6 @@ def build_template_from_page(name: str, rows: List[List[str]],
                   if code_values[i] and _codes_match(v, code_values[i]))
         return dup / len(vals) >= 0.7
 
-    # 表头行：开头连续、科目代码列为非数字的行（有数值的行必属数据区）
     header_rows = 0
     for r in rows:
         code = _norm_code((r[0] or ""))
@@ -138,7 +199,6 @@ def build_template_from_page(name: str, rows: List[List[str]],
             break
 
     def looks_texty(v: str) -> bool:
-        """中文文本为主的单元格（科目名称类）；纯数字/代号不算。"""
         if _is_numeric_text(v):
             return False
         cjk = sum(1 for ch in v if '一' <= ch <= '鿿')
@@ -151,49 +211,52 @@ def build_template_from_page(name: str, rows: List[List[str]],
         data_vals = [(r[c] or "").strip() for r in rows[header_rows:]
                      if (r[c] or "").strip()]
         if data_vals and sum(1 for v in data_vals if looks_texty(v)) / len(data_vals) >= 0.6:
-            continue                       # 科目名称类文本列，冻结不 OCR
+            continue
         value_cols.append(c)
 
-    return TableTemplate(name=name, rows=rows, col_fracs=col_fracs,
-                         row_fracs=row_fracs, value_cols=value_cols,
-                         code_col=0, header_rows=header_rows)
+    return TemplatePage(page_name=page_name, rows=rows, col_fracs=col_fracs,
+                        row_fracs=row_fracs, value_cols=value_cols,
+                        code_col=0, header_rows=header_rows)
 
 
 # ---------------------------------------------------------------------- #
-def match_template(structure, templates: List[TableTemplate]) -> Tuple[Optional[TableTemplate], float]:
-    """按"模板科目代码在 det 文本中的命中率"挑选最匹配的模板。
+def match_template(structure, templates: List[TableTemplate],
+                   force_doc: str = "") -> Tuple[Optional[TableTemplate], Optional[TemplatePage], float]:
+    """按"模板页科目代码在 det 文本中的命中率"在文档×页两级里选最佳。
 
-    返回 (最佳模板, 命中率)；命中率 < 0.5 时视为未匹配（返回 None）。
+    force_doc 指定后只在本文档的各页里选（页级路由）。
+    返回 (文档, 页, 命中率)；命中率 < 0.5 视为未匹配。
     """
     texts = set()
     if structure.det_items:
         for _b, t, _s in structure.det_items:
             texts.add(_norm_code(str(t)))
     if not texts or not templates:
-        return None, 0.0
-    best, best_score = None, 0.0
+        return None, None, 0.0
+    best_doc = best_page = None
+    best_score = 0.0
     for tpl in templates:
-        codes = [r[tpl.code_col] for r in tpl.rows
-                 if tpl.code_col < len(r) and _DIGITS.search(r[tpl.code_col] or "")]
-        codes = codes[tpl.header_rows:] if len(codes) > tpl.header_rows else codes
-        if not codes:
+        if force_doc and tpl.name != force_doc:
             continue
-        hit = sum(1 for c in codes
-                  if any(_codes_match(c, t) for t in texts))
-        score = hit / len(codes)
-        if score > best_score:
-            best, best_score = tpl, score
+        for pg in tpl.pages:
+            codes = pg.codes()
+            if not codes:
+                continue
+            hit = sum(1 for c in codes if any(_codes_match(c, t) for t in texts))
+            score = hit / len(codes)
+            if score > best_score:
+                best_doc, best_page, best_score = tpl, pg, score
     if best_score < 0.5:
-        return None, best_score
-    return best, best_score
+        return None, None, best_score
+    return best_doc, best_page, best_score
 
 
 # ---------------------------------------------------------------------- #
-def apply_template(page, structure, tpl: TableTemplate, engine,
-                   value_min_score: float = 0.0) -> List[str]:
-    """按模板识别一页：只 OCR 数值列 + 代码列校验，其余文本用模板冻结值。
+def apply_template(page, structure, tpl_page: TemplatePage, engine,
+                   doc_name: str = "") -> List[str]:
+    """按模板页识别一页：只 OCR 数值列 + 代码列校验，其余文本用模板冻结值。
 
-    返回警告列表（代码校验不符等），页面 rows 已填好（模板文本 + 数值）。
+    返回警告列表（代码校验不符等）；page.rows 已填好（模板文本 + 数值）。
     """
     warnings: List[str] = []
     xs, ys = structure.xs, structure.ys
@@ -201,7 +264,7 @@ def apply_template(page, structure, tpl: TableTemplate, engine,
         raise ValueError("网格边界不足，无法套用模板")
     left, right = xs[0], xs[-1]
     top, bottom = ys[0], ys[-1]
-    W = img_w = structure.image.shape[1]
+    W = structure.image.shape[1]
     H = structure.image.shape[0]
 
     def bx(frac: float) -> int:
@@ -210,20 +273,17 @@ def apply_template(page, structure, tpl: TableTemplate, engine,
     def by(frac: float) -> int:
         return int(round(top + frac * (bottom - top)))
 
-    col_x = [bx(f) for f in tpl.col_fracs]
-    row_y = [by(f) for f in tpl.row_fracs]
+    col_x = [bx(f) for f in tpl_page.col_fracs]
+    row_y = [by(f) for f in tpl_page.row_fracs]
 
-    n_rows = tpl.n_rows
-    out_rows: List[List[str]] = []
-    for r in range(n_rows):
-        out_rows.append(list(tpl.rows[r]))
+    n_rows = tpl_page.n_rows
+    n_cols = tpl_page.n_cols
+    out_rows: List[List[str]] = [list(r) for r in tpl_page.rows]
 
-    # 数值列 OCR
-    n_cols = tpl.n_cols
     for r in range(n_rows):
-        if r < tpl.header_rows:
-            continue                      # 表头整行冻结
-        for c in tpl.value_cols:
+        if r < tpl_page.header_rows:
+            continue
+        for c in tpl_page.value_cols:
             if c >= n_cols or r >= len(out_rows):
                 continue
             y0, y1 = row_y[r], row_y[r + 1]
@@ -240,11 +300,10 @@ def apply_template(page, structure, tpl: TableTemplate, engine,
             if text:
                 page.scores[f"{r},{c}"] = score
                 page.min_score = min(page.min_score, score)
-        # 代码列校验（不改文本，只报警）
-        if tpl.code_col < n_cols:
+        if tpl_page.code_col < n_cols:
             y0, y1 = row_y[r], row_y[r + 1]
-            x0, x1 = col_x[tpl.code_col], col_x[tpl.code_col + 1]
-            expect = (tpl.rows[r][tpl.code_col] or "").strip()
+            x0, x1 = col_x[tpl_page.code_col], col_x[tpl_page.code_col + 1]
+            expect = (tpl_page.rows[r][tpl_page.code_col] or "").strip()
             if expect and x1 - x0 > 4 and y1 - y0 > 4:
                 crop = structure.image[max(0, y0 - 2):min(H, y1 + 2),
                                        max(0, x0 - 2):min(W, x1 + 2)]
@@ -253,7 +312,6 @@ def apply_template(page, structure, tpl: TableTemplate, engine,
                     if got and not _codes_match(got, expect):
                         warnings.append(f"第{r + 1}行代码：模板[{expect}] 疑似[{got}]")
 
-    # 预览叠加：画出模板网格（便于肉眼确认套用是否准确）
     overlay = structure.image.copy()
     for x in col_x:
         cv2.line(overlay, (x, max(0, top - 4)), (x, min(H - 1, bottom + 4)),
@@ -262,22 +320,13 @@ def apply_template(page, structure, tpl: TableTemplate, engine,
         cv2.line(overlay, (max(0, left - 4), y), (min(W - 1, right + 4), y),
                  (80, 200, 80), 2)
 
-    # 供界面"点击单元格 ⇄ 图片高亮"联动（预览图坐标）
-    sc_preview = min(1.0, 1100.0 / max(W, H))
-    for r in range(n_rows):
-        for c in range(n_cols):
-            if c < len(col_x) - 1 and r < len(row_y) - 1:
-                page.cell_boxes[f"{r},{c}"] = [
-                    int(col_x[c] * sc_preview), int(row_y[r] * sc_preview),
-                    int((col_x[c + 1] - col_x[c]) * sc_preview),
-                    int((row_y[r + 1] - row_y[r]) * sc_preview)]
-
     page.mode = "table"
     page.borderless = False
     page.rows = out_rows
     page.merges = []
     page.n_rows, page.n_cols = n_rows, n_cols
-    page.template = tpl.name
+    page.template = (f"{doc_name}·{tpl_page.page_name}" if doc_name
+                     else tpl_page.page_name)
     page.overlay_jpeg = _encode(overlay)
     return warnings
 

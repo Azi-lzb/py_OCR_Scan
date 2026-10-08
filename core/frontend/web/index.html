@@ -191,6 +191,10 @@ table.tpl-grid td.tpl-valcell{background:var(--surface-2); color:var(--text-3); 
 table.tpl-grid td.tpl-valcell:focus{font-style:normal; color:var(--text);}
 .tpl-lib-preview{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:10px 14px;}
 .tpl-lib-preview img{max-width:100%; max-height:320px; border:1px solid var(--border); border-radius:8px; display:block; margin-top:6px;}
+.tpl-pages-tabs{display:flex; gap:6px; flex-wrap:wrap; align-items:center; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:8px 12px;}
+.tpl-page-tab{padding:5px 14px; border:1px solid var(--border-strong); border-radius:8px; background:var(--btn); color:var(--text-2); font-size:12.5px; cursor:pointer;}
+.tpl-page-tab:hover{background:var(--btn-hover); color:var(--text);}
+.tpl-page-tab.active{background:var(--accent); border-color:var(--accent); color:var(--on-accent); font-weight:600;}
 .tpl-doc-icon{flex:none; width:32px; height:32px; border-radius:8px; display:grid; place-items:center; background:var(--accent-soft); color:var(--accent); font-size:15px;}
 #page-settings .gen-select{width:220px;}
 #page-settings .gen-row{min-height:56px; padding:12px 20px;}
@@ -458,6 +462,7 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
         <option value="">自动匹配</option>
         <option value="__none__">不使用模板</option>
       </select>
+      <button id="btnTplAll" class="btn tiny" title="把当前选择的模板统一应用到所有照片（同一模板文档的多页会自动各就各位）">应用到全部</button>
     </span>
     <span class="spacer"></span>
     <span class="menu" id="menuExport">
@@ -748,6 +753,17 @@ function initTemplateUI(){
       }
     }).catch(function(e){ toast(e.message||String(e), "err"); });
   });
+  // 统一应用到全部照片
+  $("btnTplAll").addEventListener("click", function(){
+    var val = $("selPageTpl").value;
+    api("set_all_templates", val).then(function(st){
+      S = st; render();
+      var desc = val === "" ? "自动匹配" : (val === "__none__" ? "不使用模板" : "模板「" + val + "」");
+      if(confirm("已把" + desc + "应用到全部照片。是否立即重新识别所有照片？")){
+        api("start_ocr").then(function(){ poll(); });
+      }
+    }).catch(function(e){ toast(e.message||String(e), "err"); });
+  });
   // 重新识别当前页
   $("btnReprocess").addEventListener("click", function(){
     api("reprocess_page", S.current).then(function(ok){
@@ -761,6 +777,7 @@ function initTemplateUI(){
 /* ================= 模板库（查看 / 细调 / 删除） ================= */
 var tplLibCurrent = "";
 var tplLibDetail = null;
+var tplLibPageIdx = 0;
 
 function openTemplateLib(){
   var names = S ? (S.templates || []) : [];
@@ -788,6 +805,7 @@ function renderTplLibList(){
   Array.prototype.forEach.call(box.querySelectorAll("[data-tpl]"), function(el){
     el.addEventListener("click", function(){
       tplLibCurrent = el.getAttribute("data-tpl");
+      tplLibPageIdx = 0;
       renderTplLibList();
       loadTplDetail(tplLibCurrent);
     });
@@ -797,6 +815,7 @@ function renderTplLibList(){
 function loadTplDetail(name){
   api("get_template_detail", name).then(function(d){
     tplLibDetail = d;
+    if(tplLibPageIdx >= (d.pages||[]).length) tplLibPageIdx = 0;
     renderTplLibEditor();
   }).catch(function(e){ toast(e.message||String(e), "err"); });
 }
@@ -804,58 +823,95 @@ function loadTplDetail(name){
 function renderTplLibEditor(){
   var pane = $("tplLibEditor");
   if(!pane) return;
-  if(!tplLibDetail){
+  if(!tplLibDetail || !(tplLibDetail.pages||[]).length){
     pane.innerHTML = '<div class="side-empty" style="margin:auto;padding:60px 20px">'
       + (((S && S.templates) || []).length ? "选择左侧模板查看与细调" : "尚未保存模板：在「OCR识别」页校对后点「存为模板」") + '</div>';
     return;
   }
   var d = tplLibDetail;
-  var nR = d.rows.length, nC = nR ? d.rows[0].length : 0;
+  if(tplLibPageIdx >= d.pages.length) tplLibPageIdx = 0;
+  var pg = d.pages[tplLibPageIdx];
+  var nR = pg.rows.length, nC = nR ? pg.rows[0].length : 0;
   var vcSet = {};
-  (d.value_cols || []).forEach(function(c){ vcSet[c] = 1; });
+  (pg.value_cols || []).forEach(function(c){ vcSet[c] = 1; });
+
   var html = '<div class="tpl-lib-bar">'
     + '<span class="tpl-pick-label">模板名</span>'
-    + '<input id="tplNameIn" class="gen-input" style="width:230px" value="'+esc(d.name)+'">'
-    + '<span class="tpl-lib-meta">'+nR+' 行 × '+nC+' 列 · 数值列 '+(d.value_cols||[]).length+' 个</span>'
+    + '<input id="tplNameIn" class="gen-input" style="width:210px" value="'+esc(d.name)+'">'
+    + '<span class="tpl-lib-meta">共 '+d.pages.length+' 页 · 当前 '+nR+' 行 × '+nC+' 列 · 数值列 '+(pg.value_cols||[]).length+' 个</span>'
     + '<span style="flex:1"></span>'
-    + '<button id="tplSaveBtn" class="btn primary tiny">保存修改</button>'
-    + '<button id="tplDelBtn" class="btn danger tiny">删除模板</button>'
+    + '<button id="tplSaveBtn" class="btn primary tiny">保存本页修改</button>'
+    + '<button id="tplDelPageBtn" class="btn danger tiny">删除本页</button>'
+    + '<button id="tplDelBtn" class="btn danger tiny">删除整个模板</button>'
     + '</div>';
-  html += '<div class="tpl-lib-cols"><span class="tpl-pick-label">表头行数</span>'
-    + '<input id="tplHeaderIn" type="number" class="gen-input" style="width:70px" min="0" max="'+Math.max(0,nR-1)+'" value="'+(d.header_rows||0)+'">'
-    + '<span class="tpl-lib-note">前 N 行整行冻结、不参与 OCR</span></div>';
+
+  // 页签
+  html += '<div class="tpl-pages-tabs"><span class="tpl-pick-label">页</span>';
+  d.pages.forEach(function(pgx, i){
+    html += '<button class="tpl-page-tab'+(i===tplLibPageIdx?' active':'')+'" data-pg="'+i+'">'
+      + esc(pgx.page_name || ("第"+(i+1)+"页")) + '</button>';
+  });
+  html += '<span class="tpl-lib-note" style="margin-left:auto">一个模板可含多页（不同版式）；识别时按科目代码自动路由到对应页</span></div>';
+
+  html += '<div class="tpl-lib-cols"><span class="tpl-pick-label">页名</span>'
+    + '<input id="tplPageNameIn" class="gen-input" style="width:130px" value="'+esc(pg.page_name||"")+'">'
+    + '<span class="tpl-pick-label" style="margin-left:10px">表头行数</span>'
+    + '<input id="tplHeaderIn" type="number" class="gen-input" style="width:70px" min="0" max="'+Math.max(0,nR-1)+'" value="'+(pg.header_rows||0)+'">'
+    + '<span class="tpl-lib-note">前 N 行整行冻结</span></div>';
+
   html += '<div class="tpl-lib-cols"><span class="tpl-pick-label">数值列（每月 OCR）</span>';
   for(var c=0;c<nC;c++){
     var head = "";
-    for(var r=0;r<Math.max(1, d.header_rows||0);r++){
-      if(d.rows[r] && d.rows[r][c]) head = d.rows[r][c];
+    for(var r=0;r<Math.max(1, pg.header_rows||0);r++){
+      if(pg.rows[r] && pg.rows[r][c]) head = pg.rows[r][c];
     }
     html += '<label class="tpl-col-chip"><input type="checkbox" data-col="'+c+'"'+(vcSet[c]?' checked':'')+'>'
       + esc(head || ("列"+(c+1))) + '</label>';
   }
   html += '<span class="tpl-lib-note" style="margin-left:auto">灰斜体格=每月覆盖的数值位 · 白格=冻结文本（点击即可编辑修正）</span></div>';
+
   html += '<div class="tpl-lib-tablewrap"><table class="grid tpl-grid"><tbody>';
   for(var r2=0;r2<nR;r2++){
-    html += '<tr'+(r2 < (d.header_rows||0) ? ' class="head"' : '')+'>';
+    html += '<tr'+(r2 < (pg.header_rows||0) ? ' class="head"' : '')+'>';
     for(var c2=0;c2<nC;c2++){
-      var v = (d.rows[r2] && d.rows[r2][c2]) || "";
-      var isVal = vcSet[c2] && r2 >= (d.header_rows||0);
+      var v = (pg.rows[r2] && pg.rows[r2][c2]) || "";
+      var isVal = vcSet[c2] && r2 >= (pg.header_rows||0);
       html += '<td data-r="'+r2+'" data-c="'+c2+'"'+(isVal?' class="tpl-valcell"':'')+' contenteditable="true">'+esc(v)+'</td>';
     }
     html += '</tr>';
   }
   html += '</tbody></table></div>';
-  if(d.preview){
-    html += '<div class="tpl-lib-preview"><span class="tpl-pick-label">基准页预览</span>'
-      + '<img src="'+d.preview+'" alt="preview"></div>';
+  if(pg.preview){
+    html += '<div class="tpl-lib-preview"><span class="tpl-pick-label">本页基准图</span>'
+      + '<img src="'+pg.preview+'" alt="preview"></div>';
   }
   pane.innerHTML = html;
+
+  // 事件
+  Array.prototype.forEach.call(pane.querySelectorAll(".tpl-page-tab"), function(b){
+    b.addEventListener("click", function(){
+      tplLibPageIdx = parseInt(b.dataset.pg, 10) || 0;
+      renderTplLibEditor();
+    });
+  });
   $("tplSaveBtn").addEventListener("click", saveTplDetail);
+  $("tplDelPageBtn").addEventListener("click", function(){
+    if(tplLibDetail.pages.length <= 1){
+      toast("仅剩一页，请用「删除整个模板」", "err");
+      return;
+    }
+    if(!confirm("删除模板「"+d.name+"」的"+pg.page_name+"？")) return;
+    api("delete_template_page", d.name, tplLibPageIdx).then(function(st){
+      S = st;
+      toast("已删除页：" + pg.page_name);
+      loadTplDetail(d.name);
+    }).catch(function(e){ toast(e.message||String(e), "err"); });
+  });
   $("tplDelBtn").addEventListener("click", function(){
-    if(!confirm("删除模板「"+d.name+"」？此操作不可撤销。")) return;
+    if(!confirm("删除整个模板「"+d.name+"」（含全部 "+d.pages.length+" 页）？此操作不可撤销。")) return;
     api("delete_template", d.name).then(function(st){
       S = st;
-      tplLibCurrent = ""; tplLibDetail = null;
+      tplLibCurrent = ""; tplLibDetail = null; tplLibPageIdx = 0;
       render(); openTemplateLib();
       toast("已删除模板：" + d.name);
     }).catch(function(e){ toast(e.message||String(e), "err"); });
@@ -877,6 +933,8 @@ function saveTplDetail(){
     if(cb.checked) vc.push(parseInt(cb.dataset.col, 10));
   });
   var patchData = {
+    page_index: tplLibPageIdx,
+    page_name: (($("tplPageNameIn")||{}).value || ""),
     rows: rows,
     value_cols: vc,
     header_rows: parseInt((($("tplHeaderIn")||{}).value || "0"), 10),
@@ -888,7 +946,7 @@ function saveTplDetail(){
     tplLibCurrent = patchData.new_name || oldName;
     renderTplLibList();
     loadTplDetail(tplLibCurrent);
-    toast("模板已保存：" + tplLibCurrent, "ok");
+    toast("模板已保存：" + tplLibCurrent + " · " + (patchData.page_name || "本页"), "ok");
   }).catch(function(e){ toast(e.message||String(e), "err"); });
 }
 

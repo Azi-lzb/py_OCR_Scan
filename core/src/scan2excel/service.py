@@ -454,20 +454,20 @@ class Scan2ExcelService:
         from .template_mode import apply_template, match_template
         if len(structure.xs) < 2 or len(structure.ys) < 2:
             return False
-        chosen = None
-        if template_name:
-            chosen = next((t for t in templates if t.name == template_name), None)
-            if chosen is None:
-                return False
-        else:
-            chosen, score = match_template(structure, templates)
-            if chosen is None:
+        # 指定了模板文档名时只在它的各页里路由；否则全库自动匹配
+        doc, tpl_page, score = match_template(structure, templates,
+                                              force_doc=template_name)
+        if doc is None:
+            if template_name:
+                self._step(on_step, f"模板「{template_name}」各页均未匹配"
+                                     f"（最高命中率 {score:.0%}），按通用模式识别")
+            else:
                 self._step(on_step, f"未匹配到月计表模板（命中率 {score:.0%}），"
                                      "按通用模式识别")
-                return False
-        self._step(on_step, f"套用月计表模板：{chosen.name}")
-        warnings = apply_template(page, structure, chosen, self._engine())
-        page.template = chosen.name
+            return False
+        self._step(on_step, f"套用月计表模板：{doc.name} · {tpl_page.page_name}")
+        warnings = apply_template(page, structure, tpl_page, self._engine(),
+                                  doc_name=doc.name)
         if warnings:
             page.warning = "；".join(warnings[:6])
             self._step(on_step, "模板校验提示：" + page.warning)

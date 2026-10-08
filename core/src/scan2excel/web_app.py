@@ -144,19 +144,34 @@ class WebApi:
         if not page.rows or not page.xs or not page.ys:
             raise RuntimeError("该页缺少网格信息，无法生成模板（仅支持有框线表格页）")
         name = (name or "").strip() or f"模板{len(self._templates) + 1}"
-        from .template_mode import build_template_from_page
-        tpl = build_template_from_page(name, page.rows, page.xs, page.ys)
+        from .template_mode import TableTemplate, build_page_from_result
+        tpl_page = build_page_from_result(f"第{len(self._templates) + 1}页"
+                                          if True else "第1页",
+                                          page.rows, page.xs, page.ys)
+        # 同名文档：追加为新页；否则新建文档（首月正常建一次，以后每月换版式才需要加页）
+        doc = next((t for t in self._templates if t.name == name), None)
+        if doc is not None:
+            tpl_page.page_name = "第%d页" % (len(doc.pages) + 1)
+            doc.pages.append(tpl_page)
+        else:
+            tpl_page.page_name = "第1页"
+            doc = TableTemplate(name=name, pages=[tpl_page])
         safe = self._tpl_safe(name)
-        tpl.save(self._templates_dir / f"{safe}.json")
+        doc.save(self._templates_dir / f"{safe}.json")
+        # 预览图：每页一张（第N页.jpg）；第一页同时保留文档主预览
         if page.preview_jpeg:
             try:
-                (self._templates_dir / f"{safe}.jpg").write_bytes(page.preview_jpeg)
+                pv = self._templates_dir / f"{safe}_{tpl_page.page_name}.jpg"
+                pv.write_bytes(page.preview_jpeg)
+                if len(doc.pages) == 1:
+                    (self._templates_dir / f"{safe}.jpg").write_bytes(page.preview_jpeg)
             except OSError:
                 pass
         self._load_templates()
-        self._log(f"已保存月计表模板：{name}"
-                  f"（{tpl.n_rows}行 x {tpl.n_cols}列，{len(tpl.value_cols)}个数值列，"
-                  f"表头{tpl.header_rows}行冻结）")
+        self._log(f"已保存月计表模板：{name} · {tpl_page.page_name}"
+                  f"（{tpl_page.n_rows}行 x {tpl_page.n_cols}列，"
+                  f"{len(tpl_page.value_cols)}个数值列）"
+                  + ("【已追加为该文档的新页】" if len(doc.pages) > 1 else ""))
         return self.state
 
     def delete_template(self, name: str) -> Dict[str, Any]:
@@ -165,7 +180,7 @@ class WebApi:
         base = self._tpl_safe(name)
         for f in list(self._templates_dir.glob("*.json")) +                 list(self._templates_dir.glob("*.jpg")):
             try:
-                if f.stem == base:
+                if f.stem == base or f.stem.startswith(base + "_第"):
                     f.unlink()
             except OSError:
                 pass
@@ -179,34 +194,42 @@ class WebApi:
         if tpl is None:
             raise RuntimeError(f"模板不存在：{name}")
         d = tpl.to_dict()
-        pj = self._templates_dir / f"{self._tpl_safe(name)}.jpg"
-        d["preview"] = ""
-        if pj.is_file():
-            try:
-                d["preview"] = ("data:image/jpeg;base64,"
-                                + base64.b64encode(pj.read_bytes()).decode("ascii"))
-            except OSError:
-                pass
+        base = self._tpl_safe(name)
+        for i, pg in enumerate(d.get("pages", [])):
+            pv = self._templates_dir / f"{base}_{pg['page_name']}.jpg"
+            if not pv.is_file() and i == 0:
+                pv = self._templates_dir / f"{base}.jpg"
+            pg["preview"] = ""
+            if pv.is_file():
+                try:
+                    pg["preview"] = ("data:image/jpeg;base64,"
+                                     + base64.b64encode(pv.read_bytes()).decode("ascii"))
+                except OSError:
+                    pass
         return d
 
     def update_template(self, name: str, patch_data: Dict[str, Any]) -> Dict[str, Any]:
-        """模板库细调保存：单元格文本 / 数值列 / 表头行数 / 改名。
+        """模板库细调保存：按页编辑（单元格文本/数值列/表头行数/页名）+ 改名。
 
         模板冻结的科目名与代码若有 OCR 错字，必须能在这里改掉——
-        否则错误会每月重复。
+        否则错误会每月重复。patch_data.page_index 指定编辑哪一页（默认 0）。
         """
         if self.state["busy"]:
             raise RuntimeError("识别进行中，无法修改模板")
-        tpl = next((t for t in self._templates if t.name == name), None)
-        if tpl is None:
+        doc = next((t for t in self._templates if t.name == name), None)
+        if doc is None or not doc.pages:
             raise RuntimeError(f"模板不存在：{name}")
         patch_data = patch_data or {}
+        pidx = int(patch_data.get("page_index", 0))
+        if not (0 <= pidx < len(doc.pages)):
+            raise RuntimeError("页码超出范围")
+        pg = doc.pages[pidx]
 
         rows = patch_data.get("rows")
         if isinstance(rows, list) and rows:
             n_cols = max(len(r) for r in rows)
-            tpl.rows = [[str(c) for c in (list(r) + [""] * n_cols)[:n_cols]]
-                        for r in rows]
+            pg.rows = [[str(c) for c in (list(r) + [""] * n_cols)[:n_cols]]
+                       for r in rows]
         if isinstance(patch_data.get("value_cols"), list):
             vc = []
             for c in patch_data["value_cols"]:
@@ -214,27 +237,37 @@ class WebApi:
                     ic = int(c)
                 except (TypeError, ValueError):
                     continue
-                if 0 <= ic < tpl.n_cols and ic not in vc:
+                if 0 <= ic < pg.n_cols and ic not in vc:
                     vc.append(ic)
-            tpl.value_cols = sorted(vc)
+            pg.value_cols = sorted(vc)
         if patch_data.get("header_rows") is not None:
             hr = int(patch_data["header_rows"])
-            tpl.header_rows = max(0, min(hr, max(0, tpl.n_rows - 1)))
+            pg.header_rows = max(0, min(hr, max(0, pg.n_rows - 1)))
         if patch_data.get("code_col") is not None:
             cc = int(patch_data["code_col"])
-            tpl.code_col = max(0, min(cc, tpl.n_cols - 1))
+            pg.code_col = max(0, min(cc, pg.n_cols - 1))
+        new_page_name = str(patch_data.get("page_name") or "").strip()
+        if new_page_name and new_page_name != pg.page_name:
+            old_pv = self._templates_dir / f"{self._tpl_safe(doc.name)}_{pg.page_name}.jpg"
+            if old_pv.is_file():
+                try:
+                    old_pv.replace(self._templates_dir
+                                   / f"{self._tpl_safe(doc.name)}_{new_page_name}.jpg")
+                except OSError:
+                    pass
+            pg.page_name = new_page_name
 
-        old_name = tpl.name
+        old_name = doc.name
         new_name = str(patch_data.get("new_name") or "").strip()
         if new_name and new_name != old_name:
             old_base = self._tpl_safe(old_name)
             new_base = self._tpl_safe(new_name)
-            tpl.name = new_name
-            # 预览图随改名迁移（模板库对照用，不能丢）
-            old_jpg = self._templates_dir / f"{old_base}.jpg"
-            if old_jpg.is_file():
+            doc.name = new_name
+            # 预览图（主图 + 各页图）随改名迁移
+            for f in list(self._templates_dir.glob(f"{old_base}*.jpg")):
+                suffix = f.stem[len(old_base):]
                 try:
-                    old_jpg.replace(self._templates_dir / f"{new_base}.jpg")
+                    f.replace(self._templates_dir / f"{new_base}{suffix}.jpg")
                 except OSError:
                     pass
             old_json = self._templates_dir / f"{old_base}.json"
@@ -243,14 +276,58 @@ class WebApi:
                     old_json.unlink()
                 except OSError:
                     pass
-            # 页级指定同步改名，避免引用悬挂
             for im in self.state["images"]:
                 if im.get("template_name") == old_name:
                     im["template_name"] = new_name
-        tpl.save(self._templates_dir / f"{self._tpl_safe(tpl.name)}.json")
+        doc.save(self._templates_dir / f"{self._tpl_safe(doc.name)}.json")
         self._load_templates()
-        self._log(f"模板已更新：{tpl.name}（{tpl.n_rows}行 x {tpl.n_cols}列 · "
-                  f"数值列 {len(tpl.value_cols)} 个 · 表头 {tpl.header_rows} 行）")
+        self._log(f"模板已更新：{doc.name} · {pg.page_name}（{pg.n_rows}行 x {pg.n_cols}列"
+                  f" · 数值列 {len(pg.value_cols)} 个 · 表头 {pg.header_rows} 行）")
+        return self.state
+
+    def delete_template_page(self, name: str, page_index: int) -> Dict[str, Any]:
+        """删除模板文档中的一页；最后一页删除即整文档删除。"""
+        if self.state["busy"]:
+            raise RuntimeError("识别进行中，无法修改模板")
+        doc = next((t for t in self._templates if t.name == name), None)
+        if doc is None:
+            raise RuntimeError(f"模板不存在：{name}")
+        pidx = int(page_index)
+        if not (0 <= pidx < len(doc.pages)):
+            raise RuntimeError("页码超出范围")
+        if len(doc.pages) == 1:
+            return self.delete_template(name)
+        gone = doc.pages.pop(pidx)
+        pv = self._templates_dir / f"{self._tpl_safe(name)}_{gone.page_name}.jpg"
+        if pv.is_file():
+            try:
+                pv.unlink()
+            except OSError:
+                pass
+        doc.save(self._templates_dir / f"{self._tpl_safe(name)}.json")
+        self._load_templates()
+        self._log(f"已删除模板页：{name} · {gone.page_name}")
+        return self.state
+
+    def set_all_templates(self, name: str) -> Dict[str, Any]:
+        """批量指定：把**所有照片**统一绑定到一个模板文档（各图自动路由到对应页）。
+
+        name="" 恢复全部自动匹配；"__none__" 全部禁用模板。
+        """
+        if self.state["busy"]:
+            raise RuntimeError("识别进行中，无法修改模板绑定")
+        name = str(name or "")
+        if name and name != "__none__" and                 not any(t.name == name for t in self._templates):
+            raise RuntimeError(f"模板不存在：{name}")
+        n = 0
+        for im in self.state["images"]:
+            if name == "" :
+                im["template_name"] = ""
+            else:
+                im["template_name"] = name
+            n += 1
+        desc = {"": "自动匹配", "__none__": "不使用模板"}.get(name, f"模板「{name}」")
+        self._log(f"已为全部 {n} 张照片指定：{desc}")
         return self.state
 
     def set_template_auto(self, on: bool) -> Dict[str, Any]:
