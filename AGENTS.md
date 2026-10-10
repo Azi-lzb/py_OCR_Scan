@@ -86,3 +86,6 @@ base64 → `upload_files` 落盘 data/uploads → 显式路径进 choose_images/
   mouse_event 真实点击；exe 的数据在 **dist/OCR_Tools/core/data**（不是项目根）。
   **注意 Flask 服务的 Tk 对话框会弹在屏幕上拦截点击**，测试前先 ctypes EnumWindows 清残留。
 - 用户正被 WPS/Excel 编辑的文件（~$ 锁文件）不要动。
+- 冒烟前先清场：`taskkill` 掉 dev 服务与旧 exe 并 `netstat` 确认 8750 无监听——
+  run.py 的端口探测用各自实例的 PID 锁文件，dev 服务与打包 exe 同时运行会**同抢 8750**
+  （双绑定不报错，请求随机落到谁，表现为"配置路径忽对忽错"）。
