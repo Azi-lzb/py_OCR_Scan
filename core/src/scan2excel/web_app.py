@@ -106,7 +106,7 @@ class WebApi:
             "template_auto": True,     # 自动匹配模板（设置可关：只用每图手动指定的 sheet）
             "auto_rotate": True,       # 自动纠正页面方向（设置可关：照片已摆正时省数秒/张）
             "log": [],
-            "version": "25.10.8.0",
+            "version": "25.10.10.0",
         }
         self._pages: List = []     # TablePage 对象（含预览图字节，不进 state）
         self._previews: Dict[str, bytes] = {}   # path → 加图即生成的原图预览 JPEG

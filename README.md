@@ -1,4 +1,4 @@
-# OCR_Tools — 拍照表格转 Excel（本地离线 OCR 小工具）
+# OCR_Tools — 拍照表格 OCR + 数据校验归集（本地离线工具）
 
 把**带打印框线的纸质表格**拍成照片，本地识别成可校对的表格，一键导出 Excel。
 全程离线运行（OCR 模型内置），适合"手工录入系统前先录 Excel 做校验"的场景。
@@ -38,20 +38,31 @@ python -m venv .venv
 
 双击其一：
 
-- `shell-pywebview\启动ScanToExcel.bat` —— **推荐**，桌面窗口程序
+- `shell-pywebview\启动OCR_Tools.bat` —— **推荐**，桌面窗口程序
 - `shell-flask\启动Flask版.bat` —— 浏览器页面版（兼容性备用）
 
 ### 3. 打包成免安装 exe（可选）
 
 ```
-shell-pywebview\打包ScanToExcel.bat     → dist\OCR_Tools.exe       （约 190 MB）
-shell-flask\打包Flask版.bat             → dist\OCR_Tools-Flask.exe （约 189 MB）
+.venv\Scripts\python.exe shell-pywebviewuild_exe.py   → dist\OCR_Tools\        （约 380 MB）
+.venv\Scripts\python.exe shell-flaskuild_exe.py       → dist\OCR_Tools-Flask\  （约 378 MB）
 ```
 
-单文件绿色版（PyInstaller onefile）：前端页面与 RapidOCR 模型全部内嵌，
-拷到别的 Win10/11 机器双击即可用。需在 .venv 基础上额外
-`pip install pyinstaller`（BAT 缺依赖时会提示完整命令）。
-两个打包版均已实测可完整走通"选图→识别→导出"链路。
+文件夹版（PyInstaller onedir，`--clean --noconfirm` 全自动覆盖重建）：
+exe + _internal + core/data 种子（config/模板「不存在才复制」，升级不覆盖用户数据）。
+整个文件夹打 zip 即可分发到别的 Win10/11 机器。
+
+## 数据处理与工具
+
+- **数据处理**（三种模式，路径自动记忆）：
+  - `宽表汇总`——把 OCR 导出结果按 pytools 3.9.8 同口径摊平成宽表，可去重追加到目标工作簿
+  - `国库数据校验归集`——把多份「YYYY.MM 地区名.xls」指标表归集进时序表（每地区一 sheet、
+    行=指标、列=月份），并做总分校验（市级 vs Σ县区）与不应有数校验，输出「校验结果」sheet
+  - `会计数据补录校验`——惠州市费用指标全 0 时从费用余额表补录（联动父项、另存 *_已补录* 副本），
+    再归集校验
+  - 规则全部在 `core/data/config/config.xlsx`：归集配置 / 地区规则 / 白名单 / 补录映射
+- **工具**：批量转换 xls/xlsx/xlsm/csv 与 doc/docx（引擎自动择优 MS Office / WPS，
+  输出到源目录的「目标格式」子文件夹）
 
 ## 使用流程
 
