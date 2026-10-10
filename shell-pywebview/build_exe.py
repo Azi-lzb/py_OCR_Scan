@@ -64,8 +64,9 @@ def build() -> int:
         # HEIC/HEIF 手机照片解码（libheif 原生 dll 需一并收集）
         "--collect-all", "pillow_heif",
         "--hidden-import", "webview.platforms.edgechromium",
-        # 对话框走 pywebview 原生 API；打包版无 Tk 回退路径，剔除省体积
-        "--exclude-module", "tkinter",
+        # Tk 对话框回退必须保留：冻结态 pywebview 原生对话框若异常，
+        # 回退路径 import tkinter 缺失会表现为"点选择没反应"
+        "--hidden-import", "tkinter",
         # 未使用的重模块一律剔除，控制体积
         "--exclude-module", "torch",
         "--exclude-module", "pandas",

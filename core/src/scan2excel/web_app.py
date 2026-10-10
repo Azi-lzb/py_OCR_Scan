@@ -1388,7 +1388,11 @@ class WebApi:
                 return [str(p) for p in (paths or [])]
             except Exception:
                 pass  # 回退 Tk
-        return _tk_open_images()
+        try:
+            return _tk_open_images()
+        except Exception as e:
+            raise RuntimeError(f"文件对话框不可用（{e}）。"
+                               "请重试；若持续出现请截图日志反馈") from e
 
     _SAVE_KINDS = {
         "xlsx": ("Excel 工作簿 (*.xlsx)", ".xlsx", ("Excel 工作簿", "*.xlsx")),
@@ -1416,7 +1420,11 @@ class WebApi:
                 return str(paths) if paths else ""
             except Exception:
                 pass
-        return _tk_save_file(default_name, tk_ft, initialdir=initialdir)
+        try:
+            return _tk_save_file(default_name, tk_ft, initialdir=initialdir)
+        except Exception as e:
+            raise RuntimeError(f"保存对话框不可用（{e}）。"
+                               "请重试；若持续出现请截图日志反馈") from e
 
     # ------------------------------------------------------------------ #
     def _log(self, text: str, detail: bool = False) -> None:
