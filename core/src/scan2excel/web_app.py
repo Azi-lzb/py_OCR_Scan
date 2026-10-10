@@ -94,6 +94,7 @@ class WebApi:
             "templates": [],           # 月计表模板名列表
             "scan_mode": "enhanced",   # 扫描件输出模式（enhanced/bw/gray/origin）
             "file_picker_mode": "自动",  # 文件对话框：自动/系统原生/Tk 对话框/浏览器内置
+            "scan_enabled": False,     # 扫描王开关（默认关，导航栏隐藏）
             "scan_busy": False,        # 扫描件生成中
             "scan_done": 0,            # 已生成的张数（进度）
             "scan_images": [],         # 扫描王的照片列表（与 OCR 列表相互独立）
@@ -103,6 +104,7 @@ class WebApi:
             "ac": {"timeseries": "", "fee": "", "sources": []},  # 会计补录归集
             "tool": {"excel_files": [], "word_files": [],
                      "excel_fmt": "xlsx", "word_fmt": "docx"},  # 工具页批量转换
+            "tl_mode": "excel",        # 工具页转换类型：excel/word
             "template_auto": True,     # 自动匹配模板（设置可关：只用每图手动指定的 sheet）
             "auto_rotate": True,       # 自动纠正页面方向（设置可关：照片已摆正时省数秒/张）
             "log": [],
@@ -1414,6 +1416,8 @@ class WebApi:
 
     def set_dp_mode(self, mode: str) -> Dict[str, Any]:
         if mode in self.DP_MODES:
+            if mode != self.state.get("dp_mode"):
+                self._ac_pending = []      # 切模式后旧补录预览作废
             self.state["dp_mode"] = mode
             self._save_last_paths()
             self._log("数据处理类型：" + mode)
@@ -1437,6 +1441,7 @@ class WebApi:
             "国库数据校验归集": dict(self.state.get("ts") or {}),
             "会计数据补录校验": dict(self.state.get("ac") or {}),
             "工具": dict(self.state.get("tool") or {}),
+            "tl_mode": self.state.get("tl_mode"),
         }
         try:
             p = self.root / "data" / "config" / "last_paths.json"
@@ -1478,6 +1483,8 @@ class WebApi:
         for k in ("excel_fmt", "word_fmt"):
             if tool.get(k):
                 self.state["tool"][k] = tool[k]
+        if data.get("tl_mode") in ("excel", "word"):
+            self.state["tl_mode"] = data["tl_mode"]
 
     def dp_set_paths(self, which: str, path: str,
                      sources: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -1512,8 +1519,24 @@ class WebApi:
         self._save_last_paths()
         return self.state
 
+    def dp_remove_source(self, path: str) -> Dict[str, Any]:
+        """从当前模式的源文件列表移除单个文件。"""
+        mode = self.state.get("dp_mode")
+        if mode == "国库数据校验归集":
+            lst = self.state["ts"]["sources"]
+        elif mode == "会计数据补录校验":
+            lst = self.state["ac"]["sources"]
+        else:
+            raise RuntimeError("当前处理类型没有源文件列表")
+        lst[:] = [x for x in lst if x != str(path)]
+        self._save_last_paths()
+        self._log(f"已移除源文件：{path}")
+        return self.state
+
     def dp_pick_file(self, kind: str) -> Dict[str, Any]:
         """国库/会计模式：选择 时序表(timeseries)/费用余额表(fee)/源文件(sources，多选)。"""
+        if kind not in ("timeseries", "fee", "sources"):
+            raise RuntimeError(f"未知文件类别：{kind}")
         mode = self.state.get("dp_mode")
         if mode not in ("国库数据校验归集", "会计数据补录校验"):
             raise RuntimeError("请先在数据处理页把「处理类型」切到国库或会计")
@@ -1522,8 +1545,8 @@ class WebApi:
         paths: List[str] = []
         if self._window is not None:
             try:
-                paths = [str(p) for p in (_sta_open_dialog(flt, allow_multiple=multi) or [])
-                         if str(p).strip()]
+                paths = [str(x) for x in (_sta_open_dialog(flt, allow_multiple=multi) or [])
+                         if str(x).strip()]
             except Exception as e:
                 self._log(f"原生对话框不可用：{e}")
                 raise RuntimeError(
@@ -1535,9 +1558,9 @@ class WebApi:
             return self.state
         target = self.state["ts" if mode == "国库数据校验归集" else "ac"]
         if kind == "sources":
-            for p in paths:
-                if p not in target["sources"]:
-                    target["sources"].append(p)
+            for x in paths:
+                if x not in target["sources"]:
+                    target["sources"].append(x)
         elif kind == "timeseries":
             target["timeseries"] = paths[0]
         elif kind == "fee":
@@ -1548,10 +1571,18 @@ class WebApi:
 
     def ts_run(self) -> Dict[str, Any]:
         """国库数据校验归集：源指标表归集进时序表 + 总分/不应有数校验。"""
-        from .timeseries import run_treasury
-        mode = self.state.get("dp_mode")
-        if mode != "国库数据校验归集":
+        if self.state.get("dp_mode") != "国库数据校验归集":
             raise RuntimeError("当前不是「国库数据校验归集」模式")
+        if getattr(self, "_dp_busy", False):
+            raise RuntimeError("上一次归集校验还在进行中，请稍候")
+        self._dp_busy = True
+        try:
+            return self._ts_run_inner()
+        finally:
+            self._dp_busy = False
+
+    def _ts_run_inner(self) -> Dict[str, Any]:
+        from .timeseries import run_treasury
         ts = self.state.get("ts") or {}
         tp = ts.get("timeseries", "")
         if not tp or not Path(tp).is_file():
@@ -1569,7 +1600,7 @@ class WebApi:
         return {"ok": True, **res}
 
     def _ac_inputs(self) -> tuple:
-        """会计模式输入校验，返回 (时序表, 费用余额表, 源文件列表)。"""
+        """会计模式输入校验，返回 (时序表, 费用余额表, 源文件列表, 配置路径)。"""
         if self.state.get("dp_mode") != "会计数据补录校验":
             raise RuntimeError("当前不是「会计数据补录校验」模式")
         ac = self.state.get("ac") or {}
@@ -1587,48 +1618,93 @@ class WebApi:
             raise RuntimeError(f"未找到规则配置：{cfg}")
         return Path(tp), Path(fee), sources, cfg
 
+    def _ac_run_inner(self, do_backfill: bool) -> Dict[str, Any]:
+        from .timeseries import run_accounting
+        tp, fee, sources, cfg = self._ac_inputs()
+        res = run_accounting(tp, sources, cfg, fee, do_backfill=do_backfill)
+        self._save_last_paths()
+        return res
+
     def ac_run(self) -> Dict[str, Any]:
         """会计链路第一步：检测惠州市费用指标是否需要补录。
         需要补录 → 返回预览待前端确认（不写任何数据）；
         不需要 → 直接归集校验并返回统计。"""
-        from .timeseries import (run_accounting, parse_file_name,
-                                 read_source_table, load_config, _needs_adjustment)
-        tp, fee, sources, cfg = self._ac_inputs()
-        _cfg = load_config(cfg)
-        regions, base, vcol = _cfg["regions"], _cfg["base_region"], _cfg["value_col"]
-        pending = []
-        for s in sources:
-            info = parse_file_name(Path(s).name, regions)
-            if info["region"] == base and _needs_adjustment(read_source_table(Path(s), vcol)):
-                pending.append(s)
-        if pending:
-            self._ac_pending = pending
-            preview = {"sources": pending, "fee": fee, "note":
-                       "检测到惠州市会计表 5 个费用指标（11367~11370、11631）全 0，"
-                       "可从费用余额表补录并联动父项；源文件将另存 *_已补录* 副本。"}
-            self._log(f"会计补录：{len(pending)} 个惠州市文件可补录，待确认")
-            return {"ok": True, "needs_confirm": True, "preview": preview}
-        self._ac_pending = []
-        return self._ac_finish()
+        if self.state.get("dp_mode") != "会计数据补录校验":
+            raise RuntimeError("当前不是「会计数据补录校验」模式")
+        if getattr(self, "_dp_busy", False):
+            raise RuntimeError("上一次校验还在进行中，请稍候")
+        self._dp_busy = True
+        try:
+            from .timeseries import (parse_file_name, read_source_table,
+                                     load_config, _needs_adjustment, run_accounting)
+            tp, fee, sources, cfg = self._ac_inputs()
+            _cfg = load_config(cfg)
+            regions, base, vcol = _cfg["regions"], _cfg["base_region"], _cfg["value_col"]
+            from .timeseries import _read_fee_values
+            bmap = _cfg["backfill_map"]
+            fee_vals = _read_fee_values(Path(fee), bmap) if Path(fee).is_file() else {}
+            pending = []
+            mismatch = []
+            lines = []
+            # 余额表名称映射（用于显示指标名称）
+            from .timeseries import _fee_names as _fn
+            fee_names = _fn(Path(fee)) if Path(fee).is_file() else {}
+            for s in sources:
+                info = parse_file_name(Path(s).name, regions)
+                if info["region"] != base:
+                    continue
+                rows = read_source_table(Path(s), vcol)
+                if not _needs_adjustment(rows):
+                    continue
+                pending.append(str(s))
+                by_code = {r["code"]: r for r in rows}
+                for code_m, code_f, col_f in bmap:
+                    row = by_code.get(code_m)
+                    name = (row or {}).get("name") or fee_names.get(code_f, code_f)
+                    lines.append({"code": code_m, "name": name,
+                                  "from": f"{code_f} {fee_names.get(code_f, '')}".strip(),
+                                  "value": round(fee_vals.get(code_m, 0.0), 2)})
+                s4 = sum(fee_vals.get(x, 0.0)
+                         for x in ("11367", "11368", "11369", "11370"))
+                v11631 = fee_vals.get("11631", 0.0)
+                ok_eq = abs(s4 - v11631) <= _cfg["tolerance"]
+                lines.append({"code": "Σ11367~11370", "name": "四项费用之和",
+                              "from": "", "value": round(s4, 2)})
+                lines.append({"code": "11631", "name": "其他收入(增加值)",
+                              "from": "502 贷方", "value": round(v11631, 2)})
+                eq = f"{round(s4, 2)} = {round(v11631, 2)}"
+                ne = f"{round(s4, 2)} ≠ {round(v11631, 2)}"
+                lines.append({"eq": True, "ok": ok_eq, "text": eq if ok_eq else ne})
+                if not ok_eq:
+                    mismatch.append({"src": Path(s).name,
+                                     "s4": round(s4, 2), "v11631": round(v11631, 2)})
+            if pending:
+                self._ac_pending = pending
+                preview = {"sources": pending, "fee": str(fee),
+                           "lines": lines, "mismatch": mismatch, "note":
+                           "检测到惠州市会计表 5 个费用指标（11367~11370、11631）全 0，"
+                           "可从费用余额表补录并联动父项；源文件将另存 *_已补录* 副本。"}
+                if mismatch:
+                    self._log("会计补录：恒等式不符 " + "; ".join(
+                        f"{m['src']} Σ四费={m['s4']} vs 11631={m['v11631']}"
+                        for m in mismatch))
+                else:
+                    self._log(f"会计补录：{len(pending)} 个惠州市文件可补录，恒等式核对通过，待确认")
+                return {"ok": True, "needs_confirm": True, "preview": preview}
+            res = run_accounting(tp, sources, cfg, fee, do_backfill=False)
+            return {"ok": True, **res}
+        finally:
+            self._dp_busy = False
 
     def ac_confirm(self) -> Dict[str, Any]:
         """会计链路第二步：用户确认后执行补录 + 归集校验。"""
-        from .timeseries import run_accounting
-        tp, fee, sources, cfg = self._ac_inputs()
-        pending = getattr(self, "_ac_pending", None)
-        if not pending:
-            raise RuntimeError("没有待确认的补录（请先执行一次校验）")
-        res = run_accounting(tp, sources, cfg, fee, do_backfill=True)
-        self._ac_pending = []
-        self._save_last_paths()
-        self._log(f"会计补录校验完成：补录 {res['backfilled']} 个文件，总分异常 "
-                  f"{res['total_bad']}，不应有数 {res['no_data_bad']}")
-        return {"ok": True, **res}
-
-    # ---- 工具页：批量格式转换 ----------------------------------------
-    TOOL_EXCEL_FMTS = ("xlsx", "xlsm", "xls", "csv")
-    TOOL_WORD_FMTS = ("docx", "doc")
-
+        if getattr(self, "_dp_busy", False):
+            raise RuntimeError("上一次校验还在进行中，请稍候")
+        self._dp_busy = True
+        try:
+            return self._ac_run_inner(do_backfill=True)
+        finally:
+            self._dp_busy = False
     def tool_set_files(self, kind: str, paths: List[str]) -> Dict[str, Any]:
         """设置工具页文件列表（kind=excel/word）。"""
         key = f"{kind}_files"
@@ -1637,6 +1713,12 @@ class WebApi:
         self.state["tool"][key] = [str(p) for p in paths if str(p).strip()]
         self._save_last_paths()
         self._log(f"工具页 {kind} 文件：{len(self.state['tool'][key])} 个")
+        return self.state
+
+    def tool_set_mode(self, mode: str) -> Dict[str, Any]:
+        if mode in ("excel", "word"):
+            self.state["tl_mode"] = mode
+            self._save_last_paths()
         return self.state
 
     def tool_set_format(self, kind: str, fmt: str) -> Dict[str, Any]:
@@ -1651,7 +1733,7 @@ class WebApi:
     def tool_pick_files(self, kind: str) -> Dict[str, Any]:
         """工具页：多选文件加入列表（桌面壳系统对话框 / 无窗口 Tk）。"""
         if kind == "excel":
-            flt = ("Excel/表格文件 (*.xls;*.xlsx;*.xlsm;*.csv;*.et)",)
+            flt = ("Excel 表格文件 (*.xls;*.xlsx;*.xlsm;*.csv;*.et)",)
         elif kind == "word":
             flt = ("Word 文档 (*.doc;*.docx)",)
         else:
@@ -1702,6 +1784,11 @@ class WebApi:
         self._log(f"转换完成：成功 {res['ok']}，跳过 {res['skip']}（引擎 {res['engine']}）")
         res["ok"] = True
         return res
+
+    def set_scan_enabled(self, enabled) -> Dict[str, Any]:
+        self.state["scan_enabled"] = bool(enabled in (True, "on", "1", 1))
+        self._log("扫描王：" + ("开启" if self.state["scan_enabled"] else "关闭（导航栏隐藏）"))
+        return self.state
 
     def set_file_picker_mode(self, mode: str) -> Dict[str, Any]:
         if mode in self.PICKER_MODES:

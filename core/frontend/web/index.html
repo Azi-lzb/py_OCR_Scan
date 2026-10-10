@@ -210,6 +210,16 @@ header .spacer{flex:1;}
 .dp-body{flex:1; min-height:0; display:flex; flex-direction:column; gap:12px;
   padding:0 16px 14px; overflow:auto;}
 .dp-body .gen-row-desc{word-break:break-all;}
+.src-line{display:flex; align-items:center; gap:6px; padding:1px 0;}
+.src-line .src-name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.src-del{cursor:pointer; color:var(--text-3); font-weight:700; padding:0 5px; border-radius:3px; flex:none;}
+.chk-table{width:100%; border-collapse:collapse; font-size:12.5px; margin-top:6px;}
+.chk-table th{background:var(--accent-soft); color:var(--text); padding:5px 8px; text-align:left; border:1px solid var(--border); font-weight:600;}
+.chk-table td{padding:4px 8px; border:1px solid var(--border); word-break:break-all;}
+.chk-wl td{background:#92D05033;}
+.chk-err td{background:#FFC7CE55;}
+.chk-bf td{background:#FFFFCC66;}
+.src-del:hover{color:#c0392b; background:var(--accent-soft);}
 .plink{color:var(--accent);text-decoration:underline;cursor:pointer;}
 .plink:hover{color:var(--accent-hover);}
 
@@ -247,7 +257,8 @@ header .spacer{flex:1;}
 #page-settings .gen-card{margin-bottom:14px;}
 
 /* ---------- 模板库 ---------- */
-#page-templates{flex-direction:row; min-height:0;}
+#page-templates{gap:0;}
+#page-templates .tpl-lib-row{flex:1; min-height:0; display:flex;}
 .tpl-lib-side{flex:none; width:232px; border-right:1px solid var(--border); background:var(--sidebar); display:flex; flex-direction:column; min-height:0;}
 .tpl-lib-side .side-head{padding:14px 16px 6px; font-size:12px; font-weight:700; color:var(--text-3); letter-spacing:.4px;}
 .tpl-lib-list{flex:1; overflow-y:auto; padding:0 8px 8px; min-height:0;}
@@ -557,16 +568,9 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
   <span class="title">OCR工具</span>
   <span class="badge" id="badge">就绪</span>
   <nav class="nav-tabs">
-    <div class="menu ocr-split active" id="ocrSplit" data-page="ocr">
-      <button type="button" class="ocr-split-main" id="ocrSplitMain" data-page="ocr" title="拍照/扫描表格与文字识别">OCR 识别</button><button type="button" class="ocr-split-arrow" title="切换 OCR 相关页面">▾</button>
-      <div class="menu-list" id="ocrSplitList">
-        <button type="button" data-page="ocr">OCR 识别</button>
-        <button type="button" data-page="summary" title="每张表的勾稽结论与识别信息一览">OCR 识别结果</button>
-        <button type="button" data-page="templates" title="查看表结构与命名区域">OCR 模板库</button>
-      </div>
-    </div>
-    <button type="button" class="tab-btn" data-page="scan" title="拍照图片 → 扫描件：自动转正、透视拉平、去阴影增白；彩色增强/黑白/灰度，可导出 JPG/PDF">扫描王</button>
-    <button type="button" class="tab-btn" data-page="dp" title="数据处理：宽表汇总 / 国库归集校验 / 会计补录校验">数据处理</button>
+    <button type="button" class="tab-btn active" data-page="ocr" title="拍照/扫描表格与文字识别">OCR 识别</button>
+    <button type="button" class="tab-btn" data-page="scan" id="tabScan" style="display:none" title="拍照图片 → 扫描件：自动转正、透视拉平、去阴影增白；彩色增强/黑白/灰度，可导出 JPG/PDF">扫描王</button>
+    <button type="button" class="tab-btn" data-page="dp" title="数据处理：按配置汇总 / 国库归集校验 / 会计补录校验">数据处理</button>
     <button type="button" class="tab-btn" data-page="tools" title="工具：批量转换 xls/xlsx/xlsm、doc/docx 格式">工具</button>
     <button type="button" class="tab-btn" data-page="settings" title="外观与识别引擎设置">设置</button>
   </nav>
@@ -574,6 +578,11 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
 </header>
 <main id="page-ocr" class="page active">
   <div class="page-actions">
+    <select id="ocrPageSel" class="gen-select" style="min-width:150px">
+      <option value="ocr">OCR 识别</option>
+      <option value="summary">OCR 识别结果</option>
+      <option value="templates">OCR 模板库</option>
+    </select>
     <button id="btnChoose" class="btn">选择文件</button>
     <button id="btnClearAll" class="btn" title="清空全部照片和识别结果">清空</button>
     <button id="btnStart" class="btn primary" disabled>批量识别表格</button>
@@ -629,12 +638,12 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
     <button id="btnScanChoose" class="btn">选择文件</button>
     <button id="btnScanClear" class="btn" title="清空全部照片和扫描件">清空</button>
     <span class="tlabel" style="font-size:12px;color:var(--text-2);font-weight:600">输出模式</span>
-    <div class="seg" id="scanModeSeg">
-      <button data-mode="enhanced" class="on" title="去阴影推白底、提对比、轻锐化，保留彩色">彩色增强</button>
-      <button data-mode="bw" title="纸面纯白、笔画纯黑（自适应二值化）">黑白</button>
-      <button data-mode="gray" title="去阴影后的灰度，对比拉伸">灰度</button>
-      <button data-mode="origin" title="只做方向转正和透视拉平，不增强">原图拉平</button>
-    </div>
+    <select id="scanModeSel" class="gen-select" style="min-width:110px">
+      <option value="enhanced" title="去阴影推白底、提对比、轻锐化，保留彩色">彩色增强</option>
+      <option value="bw" title="纸面纯白、笔画纯黑（自适应二值化）">黑白</option>
+      <option value="gray" title="去阴影后的灰度，对比拉伸">灰度</option>
+      <option value="origin" title="只做方向转正和透视拉平，不增强">原图拉平</option>
+    </select>
     <button id="btnScanRender" class="btn primary">生成扫描件</button>
     <button id="btnScanJpg" class="btn" disabled title="逐张存 JPG，保存到照片旁的「扫描件_时间戳」文件夹">导出 JPG</button>
     <button id="btnScanPdf" class="btn" disabled title="全部扫描件合并成一个 PDF">导出 PDF</button>
@@ -650,6 +659,13 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
   </div>
 </section>
 <section id="page-summary" class="page">
+  <div class="page-actions">
+    <select id="ocrPageSel2" class="gen-select" style="min-width:150px">
+      <option value="ocr">OCR 识别</option>
+      <option value="summary">OCR 识别结果</option>
+      <option value="templates">OCR 模板库</option>
+    </select>
+  </div>
   <div class="sum-stats" id="sumStats"></div>
   <div class="sum-scroll">
     <table class="grid" id="sumTable"></table>
@@ -660,7 +676,7 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
 <section id="page-dp" class="page">
   <div class="page-actions">
     <select id="dpModeSel" class="gen-select" style="min-width:170px">
-      <option value="宽表汇总">宽表汇总</option>
+      <option value="宽表汇总">按配置汇总</option>
       <option value="国库数据校验归集">国库数据校验归集</option>
       <option value="会计数据补录校验">会计数据补录校验</option>
     </select>
@@ -670,7 +686,7 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
     <button id="btnDpSrcClear" class="btn" style="display:none">清空源文件</button>
     <button id="btnDpConfirm" class="btn primary" style="display:none">确认补录</button>
     <span class="spacer"></span>
-    <button id="btnDpRun" class="btn primary" disabled>宽表汇总</button>
+    <button id="btnDpRun" class="btn primary" disabled>按配置汇总</button>
   </div>
   <div class="dp-body">
     <div class="gen-card" style="width:100%">
@@ -679,45 +695,51 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
       <div class="gen-row" id="rowTs" style="display:none"><div class="gen-row-name">时序表</div><div class="gen-row-desc" id="dpTs">—</div></div>
       <div class="gen-row" id="rowFee" style="display:none"><div class="gen-row-name">费用余额表</div><div class="gen-row-desc" id="dpFee">—</div></div>
       <div class="gen-row" id="rowCfg"><div class="gen-row-name">规则配置</div><div class="gen-row-desc" id="dpConfig">—</div></div>
-      <div class="gen-row"><div class="gen-row-name">输出目录</div><div class="gen-row-desc" id="dpExports">—</div></div>
+      <div class="gen-row" id="rowExports" style="display:none"><div class="gen-row-name">输出目录</div><div class="gen-row-desc" id="dpExports">—</div></div>
     </div>
     <div class="gen-card" style="width:100%">
       <div class="gen-card-title">说明</div>
-      <div class="gen-row" id="rowExpWide"><div class="gen-row-name">宽表汇总</div><div class="gen-row-desc">按 config 规则把源文件所有 sheet 摊平成宽表（pytools 3.9.8 同款）：行=源数据行（行头取合并格锚点，中缝表头也各占一行），列=列头路径，直接可 SUMIFS 引用。</div></div>
+      <div class="gen-row" id="rowExpWide"><div class="gen-row-name">按配置汇总</div><div class="gen-row-desc">按 config 规则把源文件所有 sheet 摊平成宽表（pytools 3.9.8 同款）：行=源数据行（行头取合并格锚点，中缝表头也各占一行），列=列头路径，直接可 SUMIFS 引用。</div></div>
       <div class="gen-row" id="rowExpTs" style="display:none"><div class="gen-row-name">国库数据校验归集</div><div class="gen-row-desc">把多份「YYYY.MM 地区名.xls」指标表（代码/名称/行序号/余额）按文件名归集进时序表（每地区一 sheet、行=指标、列=月份），随后做总分校验（市级 vs Σ县区）与不应有数校验（惠阳/博罗/龙门），结果写进时序表的「校验结果」sheet。规则（取数列/容差/地区/白名单）在 config.xlsx 的「归集配置/地区规则/白名单」可配。</div></div>
       <div class="gen-row" id="rowExpAc" style="display:none"><div class="gen-row-name">会计数据补录校验</div><div class="gen-row-desc">录入系统前的数据处理：惠州市会计表 5 个费用指标（11367~11370、11631）全 0 时，从费用余额表按「补录映射」补录并联动父项，另存 *_已补录* 副本；随后与国库同口径归集校验进会计时序表。</div></div>
       <div class="gen-row"><div class="gen-row-name" id="dpResultName">汇总结果</div><div class="gen-row-desc" id="dpResult">—</div></div>
       <div class="gen-row" id="rowTarget"><div class="gen-row-name">写入目标</div><div class="gen-row-desc" id="dpTarget">—</div></div>
     </div>
+    <div class="gen-card" style="width:100%" id="cardTsOut" style="display:none">
+      <div class="gen-card-title">归集结果</div>
+      <div class="gen-row"><div class="gen-row-name">时序表</div><div class="gen-row-desc" id="dpTsOut">—</div></div>
+    </div>
+    <div class="gen-card" style="width:100%" id="cardAcBf" style="display:none">
+      <div class="gen-card-title">补录结果</div>
+      <div class="gen-row"><div class="gen-row-name">补录摘要</div><div class="gen-row-desc" id="dpAcBf">—</div></div>
+      <div class="gen-row"><div class="gen-row-name">已补录副本</div><div class="gen-row-desc" id="dpAcCopies">—</div></div>
+    </div>
+    <div class="gen-card" style="width:100%" id="cardChk" style="display:none">
+      <div class="gen-card-title">校验明细</div>
+      <div class="gen-row"><div class="gen-row-desc" id="dpChkTable">—</div></div>
+    </div>
   </div>
 </section>
 <section id="page-tools" class="page">
   <div class="page-actions">
-    <button id="btnTlExcelPick" class="btn">选择表格文件</button>
-    <select id="tlExcelFmt" class="gen-select" style="min-width:90px">
+    <select id="tlModeSel" class="gen-select" style="min-width:170px">
+      <option value="excel">批量转 Excel 格式</option>
+      <option value="word">批量转 Word 格式</option>
+    </select>
+    <button id="btnTlPick" class="btn">选择文件</button>
+    <select id="tlFmtSel" class="gen-select" style="min-width:90px">
       <option value="xlsx">转 xlsx</option><option value="xlsm">转 xlsm</option>
       <option value="xls">转 xls</option><option value="csv">转 csv</option>
     </select>
-    <button id="btnTlExcelRun" class="btn primary" disabled>批量转 Excel</button>
+    <button id="btnTlRun" class="btn primary" disabled>批量转换</button>
     <span class="spacer"></span>
-    <button id="btnTlWordPick" class="btn">选择文档文件</button>
-    <select id="tlWordFmt" class="gen-select" style="min-width:90px">
-      <option value="docx">转 docx</option><option value="doc">转 doc</option>
-    </select>
-    <button id="btnTlWordRun" class="btn primary" disabled>批量转 Word</button>
   </div>
   <div class="dp-body">
     <div class="gen-card" style="width:100%">
-      <div class="gen-card-title">批量转 Excel 格式</div>
-      <div class="gen-row"><div class="gen-row-name">表格文件</div><div class="gen-row-desc" id="tlExcelFiles">—</div></div>
-      <div class="gen-row"><div class="gen-row-name">说明</div><div class="gen-row-desc">支持 xls / xlsx / xlsm / csv / et 互转，输出到各源文件所在目录的「目标格式」子文件夹；同名自动加 _1/_2。由本机 Excel 或 WPS 原生转换，公式与格式完整保留。</div></div>
-      <div class="gen-row"><div class="gen-row-name">转换结果</div><div class="gen-row-desc" id="tlExcelResult">—</div></div>
-    </div>
-    <div class="gen-card" style="width:100%">
-      <div class="gen-card-title">批量转 Word 格式</div>
-      <div class="gen-row"><div class="gen-row-name">文档文件</div><div class="gen-row-desc" id="tlWordFiles">—</div></div>
-      <div class="gen-row"><div class="gen-row-name">说明</div><div class="gen-row-desc">doc ↔ docx 批量互转，引擎自动择优（MS Word / WPS 文字），输出规则同上。</div></div>
-      <div class="gen-row"><div class="gen-row-name">转换结果</div><div class="gen-row-desc" id="tlWordResult">—</div></div>
+      <div class="gen-card-title" id="tlCardTitle">批量转 Excel 格式</div>
+      <div class="gen-row"><div class="gen-row-name" id="tlFilesName">表格文件</div><div class="gen-row-desc" id="tlFiles">—</div></div>
+      <div class="gen-row"><div class="gen-row-name">说明</div><div class="gen-row-desc" id="tlDesc">支持 xls / xlsx / xlsm / csv / et 互转，输出到各源文件所在目录的「目标格式」子文件夹；同名自动加 _1/_2。由本机 Excel 或 WPS 原生转换，公式与格式完整保留。</div></div>
+      <div class="gen-row"><div class="gen-row-name">转换结果</div><div class="gen-row-desc" id="tlResult">—</div></div>
     </div>
   </div>
 </section>
@@ -772,6 +794,18 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
             <select id="selAutoRot" class="gen-select">
               <option value="on">开启</option>
               <option value="off">关闭</option>
+            </select>
+          </div>
+        </div>
+        <div class="gen-row">
+          <div class="gen-row-left">
+            <div class="gen-row-name">扫描王</div>
+            <div class="gen-row-desc">拍照图转扫描件（透视拉平、去阴影、增强/黑白/灰度，可导出 JPG/PDF）。默认关闭并隐藏导航入口；开启后导航栏显示「扫描王」页签。</div>
+          </div>
+          <div class="gen-row-right">
+            <select id="selScanEnabled" class="gen-select">
+              <option value="off">关闭</option>
+              <option value="on">开启</option>
             </select>
           </div>
         </div>
@@ -833,12 +867,21 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
   </div>
 </section>
 <section id="page-templates" class="page">
+  <div class="page-actions" style="border-bottom:1px solid var(--border)">
+    <select id="ocrPageSel3" class="gen-select" style="min-width:150px">
+      <option value="ocr">OCR 识别</option>
+      <option value="summary">OCR 识别结果</option>
+      <option value="templates">OCR 模板库</option>
+    </select>
+  </div>
+  <div class="tpl-lib-row">
   <div class="tpl-lib-side">
     <div class="side-head">模板库</div>
     <div class="tpl-lib-list" id="tplLibList"></div>
     <div class="tpl-lib-hint-box">新模板：把做好的 xlsx 放入模板目录，点右上「重新扫描」。<br>每个工作表 = 一个识别页（下单时按工作表选择）。</div>
   </div>
   <div class="tpl-lib-main" id="tplLibEditor"></div>
+  </div>
 </section>
 <div id="logPane">
 <input type="file" id="browserFile" style="display:none">
@@ -937,37 +980,23 @@ function syncNav(name){
   Array.prototype.forEach.call(document.querySelectorAll(".tab-btn"), function(b){
     b.classList.toggle("active", b.dataset.page === name);
   });
-  var split = $("ocrSplit");
-  if(!split) return;
-  var isOcr = OCR_PAGES.hasOwnProperty(name);
-  split.classList.toggle("active", isOcr);
-  if(isOcr){
-    split.dataset.page = name;
-    $("ocrSplitMain").textContent = OCR_PAGES[name];
-  }
-  Array.prototype.forEach.call(
-    document.querySelectorAll("#ocrSplitList button"), function(b){
-      var on = b.dataset.page === name;
-      b.classList.toggle("ocr-cur", on);
-      b.innerHTML = esc(OCR_PAGES[b.dataset.page])
-        + (on ? ' <span class="ocr-check">✓</span>' : "");
+  if(OCR_PAGES.hasOwnProperty(name)){
+    ["ocrPageSel", "ocrPageSel2", "ocrPageSel3"].forEach(function(id){
+      var sel = $(id);
+      if(sel && document.activeElement !== sel) sel.value = name;
     });
+  }
 }
 (function initTabs(){
   Array.prototype.forEach.call(document.querySelectorAll(".tab-btn"), function(b){
     b.addEventListener("click", function(){ switchPage(b.dataset.page); });
   });
-  // OCR 分裂按钮：主区点击切到按钮文字对应的页面
-  $("ocrSplitMain").addEventListener("click", function(){
-    switchPage($("ocrSplit").dataset.page || "ocr");
-  });
-  // 下拉选项：切换 + 同步主区文字 + 收起菜单
-  Array.prototype.forEach.call(
-    document.querySelectorAll("#ocrSplitList button"), function(b){
-    b.addEventListener("click", function(ev){
-      ev.stopPropagation();
-      closeMenus();
-      switchPage(b.dataset.page);
+  // OCR 页面下拉：三个页面各一个，互相联动
+  ["ocrPageSel", "ocrPageSel2", "ocrPageSel3"].forEach(function(id){
+    var sel = $(id);
+    if(!sel) return;
+    sel.addEventListener("change", function(){
+      switchPage(sel.value);
     });
   });
   syncNav("ocr");
@@ -1004,6 +1033,14 @@ function syncNav(name){
     api('set_auto_rotate', on).then(function(st){
       S = st; render();
       toast(on ? '自动旋转：开启' : '自动旋转：关闭（请确保照片方向已摆正）', 'ok');
+    }).catch(function(e){ toast(e.message||String(e), 'err'); });
+  });
+  var selScanEn = document.getElementById('selScanEnabled');
+  if(selScanEn) selScanEn.addEventListener('change', function(){
+    var on = selScanEn.value === 'on';
+    api('set_scan_enabled', on).then(function(st){
+      S = st; render();
+      toast(on ? '扫描王：开启（导航栏已显示）' : '扫描王：关闭（导航栏已隐藏）', 'ok');
     }).catch(function(e){ toast(e.message||String(e), 'err'); });
   });
   var selTpl = document.getElementById('selTplAuto');
@@ -1275,6 +1312,15 @@ function syncEngineSetting(){
   var tpl = $("selTplAuto");
   if(tpl && document.activeElement !== tpl)
     tpl.value = (S.template_auto === false) ? "off" : "on";
+  var se = $("selScanEnabled");
+  if(se && document.activeElement !== se)
+    se.value = S.scan_enabled ? "on" : "off";
+  var tabScan = $("tabScan");
+  if(tabScan) tabScan.style.display = S.scan_enabled ? "" : "none";
+  if(!S.scan_enabled){
+    var cur = document.querySelector(".page.active");
+    if(cur && cur.id === "page-scan") switchPage("ocr");
+  }
   var pk = $("selPicker");
   if(pk && document.activeElement !== pk)
     pk.value = S.file_picker_mode || "自动";
@@ -1544,17 +1590,11 @@ function renderScanPreview(){
       renderScanPage(); toast("已清空", "ok");
     }).catch(function(e){ toast(e.message || String(e), "err"); });
   });
-  Array.prototype.forEach.call(
-    document.querySelectorAll("#scanModeSeg button"), function(b){
-    b.addEventListener("click", function(){
-      Array.prototype.forEach.call(
-        document.querySelectorAll("#scanModeSeg button"), function(x){
-        x.classList.toggle("on", x === b);
-      });
-      api("set_scan_mode", b.dataset.mode).then(function(st){
-        S = st; renderScanPage();
-      }).catch(function(e){ toast(e.message || String(e), "err"); });
-    });
+  $("scanModeSel").addEventListener("change", function(){
+    api("set_scan_mode", $("scanModeSel").value).then(function(st){
+      S = st; renderScanPage();
+      toast("输出模式：" + $("scanModeSel").selectedOptions[0].textContent, "ok");
+    }).catch(function(e){ toast(e.message || String(e), "err"); });
   });
   $("btnScanRender").addEventListener("click", function(){
     api("render_scans").then(function(st){ S = st; renderScanPage(); })
@@ -1690,18 +1730,33 @@ function renderDp(){
   $("btnDpSrcClear").style.display = (isTs || isAc) ? "" : "none";
   $("dpResultName").textContent = wide ? "汇总结果" : "校验结果";
   $("rowTarget").style.display = wide ? "" : "none";
+  $("rowExports").style.display = wide ? "" : "none";
+  $("cardTsOut").style.display = (isTs || isAc) ? "" : "none";
+  $("cardAcBf").style.display = isAc ? "" : "none";
+  $("cardChk").style.display = (isTs || isAc) ? "" : "none";
+  if(wide){
+    $("dpTsOut").innerHTML = "—";
+    $("dpAcBf").innerHTML = "—";
+    $("dpAcCopies").innerHTML = "—";
+    $("dpChkTable").innerHTML = "—";
+  }
   var sources = tsx.sources || [];
   if(wide){
     var s = (S.dp || {}).source || "";
     $("dpSource").innerHTML = s ? plink(s) : "未选择（点击「选择源文件」）";
   } else {
     $("dpSource").innerHTML = sources.length
-      ? sources.length + " 个文件，首个：" + plink(sources[0])
+      ? sources.map(function(p, i){
+          var name = p.split(/[\/]/).pop();
+          return '<div class="src-line"><span class="plink" data-path="' + esc(p)
+            + '" title="' + esc(p) + '">' + esc(name) + '</span>'
+            + '<span class="src-del" data-delpath="' + esc(p) + '" title="移除">×</span></div>';
+        }).join("")
       : "未选择（点击「选择源文件」可多选）";
   }
   $("dpTs").innerHTML = tsx.timeseries ? plink(tsx.timeseries) : "未选择";
   if(isAc) $("dpFee").innerHTML = tsx.fee ? plink(tsx.fee) : "未选择";
-  $("btnDpRun").textContent = wide ? "宽表汇总" : (isTs ? "归集并校验" : "补录并校验");
+  $("btnDpRun").textContent = wide ? "按配置汇总" : (isTs ? "归集并校验" : "补录并校验");
   var can = !S.busy && (wide ? !!((S.dp || {}).source)
       : (isTs ? !!tsx.timeseries && sources.length > 0
               : !!tsx.timeseries && !!tsx.fee && sources.length > 0));
@@ -1711,6 +1766,13 @@ function renderDp(){
   $("dpModeSel").addEventListener("change", function(){
     api("set_dp_mode", $("dpModeSel").value).then(function(st){
       S = st; renderDp();
+      $("dpResult").innerHTML = "—";
+      $("dpTarget").innerHTML = "—";
+      $("dpTsOut").innerHTML = "—";
+      $("dpAcBf").innerHTML = "—";
+      $("dpAcCopies").innerHTML = "—";
+      $("dpChkTable").innerHTML = "—";
+      $("btnDpConfirm").style.display = "none";
       toast("数据处理类型：" + $("dpModeSel").value, "ok");
     }).catch(function(e){ toast(e.message || String(e), "err"); });
   });
@@ -1742,37 +1804,68 @@ function renderDp(){
   $("btnDpRun").addEventListener("click", function(){
     var mode = S.dp_mode || "宽表汇总";
     if(mode === "国库数据校验归集"){
-      toast("归集校验中…");
+      $("btnDpRun").disabled = true;
+      $("btnDpRun").textContent = "归集校验中…";
       api("ts_run").then(function(res){
+        var real = (res.total_bad || 0) - (res.wl_hit || 0);
+        var wlNote = (res.wl_hit > 0) ? "（含白名单 " + res.wl_hit + " 条）" : "";
         $("dpResult").innerHTML = "归集 " + res.files + " 个源文件、写入 " + res.cells
-          + " 格；总分异常 " + res.total_bad + "、不应有数 " + res.no_data_bad
-          + " → " + plink(res.result_path);
-        toast("归集校验完成：" + (res.total_bad + res.no_data_bad) + " 条异常",
-              (res.total_bad + res.no_data_bad) > 0 ? "err" : "ok");
-      }).catch(function(e){ toast(e.message || String(e), "err"); });
+          + " 格；总分异常 " + res.total_bad + wlNote + "、不应有数 " + res.no_data_bad;
+        $("dpTsOut").innerHTML = "归集写入 → " + plink(res.result_path)
+          + "（校验结果见时序表内「校验结果」sheet）";
+        $("dpChkTable").innerHTML = chkRowsHtml(res.rows);
+        toast("归集校验完成：" + (real > 0 ? real + " 条真异常" :
+              (res.total_bad + res.no_data_bad) + " 条差异均为白名单"),
+              real > 0 ? "err" : "ok");
+      }).catch(function(e){ toast(e.message || String(e), "err"); })
+        .then(function(){ renderDp(); });
       return;
     }
     if(mode === "会计数据补录校验"){
       toast("会计校验中…");
       api("ac_run").then(function(res){
         if(res.needs_confirm){
+          var mm = res.preview.mismatch || [];
+          var ls = res.preview.lines || [];
+          var lsHtml = ls.map(function(x){
+            if(x.eq){
+              return '<div class="src-line" style="font-weight:600;color:'
+                + (x.ok ? "#1e7e34" : "#c0392b") + '">' + esc(x.text)
+                + (x.ok ? "  ✓" : "  ✗ 不符") + '</div>';
+            }
+            return '<div class="src-line"><span class="plink" style="pointer-events:none;min-width:52px">'
+              + esc(x.code) + '</span><span style="flex:1">' + esc(x.name)
+              + (x.from ? '（← ' + esc(x.from) + '）' : '')
+              + '</span><b>' + x.value + '</b></div>';
+          }).join("");
+          var mmHtml = mm.length
+            ? '<div style="color:#c0392b;font-weight:600">⚠ 存在不符项，请核对余额表后再确认补录。</div>'
+            : '<div style="color:#1e7e34;font-weight:600">✓ 恒等式全部相符，可确认补录。</div>';
           $("dpResult").innerHTML = "检测到 <b>惠州市</b> 会计表 5 个费用指标全 0（"
-            + (res.preview.sources || []).length + " 个文件）——可从费用余额表补录并联动父项，"
-            + "源文件会另存 *_已补录* 副本。核对无误请点「确认补录」。";
+            + (res.preview.sources || []).length + " 个文件），补录明细如下（值=补录后将写入的数）：" 
+            + "<br>" + lsHtml + "<br>" + mmHtml;
           $("btnDpConfirm").style.display = "";
-          toast("检测到可补录数据，请确认", "err");
+          toast(mm.length ? "恒等式核对不符，请核对余额表！" : "恒等式核对通过，请确认补录",
+                mm.length ? "err" : "ok");
         } else {
+          var real2 = (res.total_bad || 0) - (res.wl_hit || 0);
+          var wlNote2 = (res.wl_hit > 0) ? "（含白名单 " + res.wl_hit + " 条）" : "";
           $("btnDpConfirm").style.display = "none";
           $("dpResult").innerHTML = "归集 " + res.files + " 个源文件、写入 " + res.cells
-            + " 格；总分异常 " + res.total_bad + "、不应有数 " + res.no_data_bad
-            + " → " + plink(res.result_path);
-          toast("会计校验完成：" + (res.total_bad + res.no_data_bad) + " 条异常",
-                (res.total_bad + res.no_data_bad) > 0 ? "err" : "ok");
+            + " 格；总分异常 " + res.total_bad + wlNote2 + "、不应有数 " + res.no_data_bad;
+          $("dpTsOut").innerHTML = "归集写入 → " + plink(res.result_path)
+            + "（校验结果见时序表内「校验结果」sheet）";
+          $("dpAcBf").innerHTML = "无需补录（未检测到费用指标全 0 的惠州市文件）";
+          $("dpAcCopies").innerHTML = "—";
+          $("dpChkTable").innerHTML = chkRowsHtml(res.rows);
+          toast("会计校验完成：" + (real2 > 0 ? real2 + " 条真异常" :
+                (res.total_bad + res.no_data_bad) + " 条差异均为白名单"),
+                real2 > 0 ? "err" : "ok");
         }
       }).catch(function(e){ toast(e.message || String(e), "err"); });
       return;
     }
-    toast("宽表汇总中…");
+    toast("按配置汇总中…");
     api("dp_run").then(function(res){
       $("dpResult").innerHTML = res.rows + " 行 x " + res.cols + " 列 → " + plink(res.path);
       $("dpTarget").innerHTML = (res.targets || []).map(function(x){
@@ -1781,22 +1874,43 @@ function renderDp(){
         if(!x.written) return p + "无新增行";
         return p + "新增 " + x.added + " 行（输入 " + x.input + "）";
       }).join("<br>") || "未配置目标写入";
-      toast("宽表汇总完成：" + res.rows + " 行", "ok");
+      toast("按配置汇总完成：" + res.rows + " 行", "ok");
     }).catch(function(e){ toast(e.message || String(e), "err"); });
   });
   $("btnDpConfirm").addEventListener("click", function(){
     toast("补录并校验中…");
     api("ac_confirm").then(function(res){
       $("btnDpConfirm").style.display = "none";
-      $("dpResult").innerHTML = "已补录 " + res.backfilled + " 个惠州市文件（另存 *_已补录* 副本 "
-        + res.copies.length + " 份）；归集 " + res.files + " 个源文件；总分异常 "
-        + res.total_bad + "、不应有数 " + res.no_data_bad + " → " + plink(res.result_path);
-      toast("补录校验完成", "ok");
+      var real3 = (res.total_bad || 0) - (res.wl_hit || 0);
+      var wlNote3 = (res.wl_hit > 0) ? "（含白名单 " + res.wl_hit + " 条）" : "";
+      var copiesHtml = (res.copies || []).length
+        ? "<br>已补录副本：<br>" + (res.copies || []).map(function(cp){
+            return "&nbsp;&nbsp;" + plink(cp);
+          }).join("<br>")
+        : "";
+      $("dpResult").innerHTML = "已补录 " + res.backfilled + " 个惠州市文件；归集 "
+        + res.files + " 个源文件；总分异常 "
+        + res.total_bad + wlNote3 + "、不应有数 " + res.no_data_bad;
+      $("dpAcBf").innerHTML = "补录 " + res.backfilled + " 个惠州市文件（费用四项 + 增加值 + 父项联动）";
+      $("dpAcCopies").innerHTML = (res.copies || []).length
+        ? (res.copies || []).map(function(cp){ return plink(cp); }).join("<br>")
+        : "—";
+      $("dpTsOut").innerHTML = "归集写入 → " + plink(res.result_path)
+        + "（校验结果见时序表内「校验结果」sheet）";
+      $("dpChkTable").innerHTML = chkRowsHtml(res.rows);
+      toast("补录校验完成：" + (real3 > 0 ? real3 + " 条真异常" : "差异均为白名单"),
+            real3 > 0 ? "err" : "ok");
     }).catch(function(e){ toast(e.message || String(e), "err"); });
   });
   /* 路径超链接：点击用系统程序打开（文件/文件夹） */
   $("page-dp").addEventListener("click", function(ev){
     var t = ev.target;
+    if(t && t.classList && t.classList.contains("src-del") && t.dataset.delpath){
+      api("dp_remove_source", t.dataset.delpath).then(function(st){
+        S = st; renderDp(); toast("已移除源文件", "ok");
+      }).catch(function(e){ toast(e.message || String(e), "err"); });
+      return;
+    }
     if(t && t.classList && t.classList.contains("plink") && t.dataset.path){
       api("open_path", t.dataset.path)
         .catch(function(e){ toast(e.message || String(e), "err"); });
@@ -1804,58 +1918,103 @@ function renderDp(){
   });
 })();
 
-/* ================= 工具页：批量格式转换 ================= */
+/* ================= 工具页：批量格式转换（类型下拉切换） ================= */
+var TL_MODES = {
+  excel: { name: "表格文件", card: "批量转 Excel 格式", pick: "tool-excel",
+           fmtKey: "excel_fmt", filesKey: "excel_files", run: "excel",
+           res: "转换完成后此处显示逐文件结果",
+           desc: "支持 xls / xlsx / xlsm / csv / et 互转，输出到各源文件所在目录的「目标格式」子文件夹；同名自动加 _1/_2。由本机 Excel 或 WPS 原生转换，公式与格式完整保留。",
+           fmts: ["xlsx", "xlsm", "xls", "csv"] },
+  word:  { name: "文档文件", card: "批量转 Word 格式", pick: "tool-word",
+           fmtKey: "word_fmt", filesKey: "word_files", run: "word",
+           res: "转换完成后此处显示逐文件结果",
+           desc: "doc ↔ docx 批量互转，引擎自动择优（MS Word / WPS 文字），输出规则同上。",
+           fmts: ["docx", "doc"] }
+};
+function tlMode(){ return S.tl_mode || $("tlModeSel").value || "excel"; }
 function renderTools(){
+  var m = tlMode(), spec = TL_MODES[m];
+  var sel = $("tlModeSel");
+  if(document.activeElement !== sel) sel.value = m;
   var tl = S.tool || {};
-  ["excel", "word"].forEach(function(kind){
-    var files = tl[kind + "_files"] || [];
-    $(kind === "excel" ? "tlExcelFiles" : "tlWordFiles").innerHTML = files.length
-      ? files.length + " 个文件，首个：" + plink(files[0])
-      : "未选择（点击上方「选择文件」可多选）";
-  });
-  var ef = $("tlExcelFmt"), wf = $("tlWordFmt");
-  if(document.activeElement !== ef) ef.value = tl.excel_fmt || "xlsx";
-  if(document.activeElement !== wf) wf.value = tl.word_fmt || "docx";
-  $("btnTlExcelRun").disabled = S.busy || !(tl.excel_files || []).length;
-  $("btnTlWordRun").disabled = S.busy || !(tl.word_files || []).length;
+  var files = tl[spec.filesKey] || [];
+  $("tlCardTitle").textContent = spec.card;
+  $("tlFilesName").textContent = spec.name;
+  $("tlDesc").textContent = spec.desc;
+  var fs = $("tlFmtSel");
+  if(document.activeElement !== fs){
+    fs.innerHTML = spec.fmts.map(function(f){ return "<option value=\"" + f + "\">转 " + f + "</option>"; }).join("");
+    fs.value = tl[spec.fmtKey] || spec.fmts[0];
+  }
+  $("tlFiles").innerHTML = files.length
+    ? files.length + " 个文件：" + files.map(function(p){
+        var name = p.split(/[\/]/).pop();
+        return '<div class="src-line"><span class="plink" data-path="' + esc(p)
+          + '" title="' + esc(p) + '">' + esc(name) + '</span>'
+          + '<span class="src-del" data-tldel="' + m + '" data-tlpath="' + esc(p)
+          + '" title="移除">×</span></div>';
+      }).join("")
+    : "未选择（点击「选择文件」可多选）";
+  $("btnTlRun").disabled = S.busy || !files.length;
 }
 (function initTools(){
-  $("btnTlExcelPick").addEventListener("click", function(){
-    if(S.file_picker_mode === "浏览器内置"){ browserPick("tool-excel"); return; }
-    api("tool_pick_files", "excel").then(function(st){ S = st; renderTools(); })
+  $("tlModeSel").addEventListener("change", function(){
+    api("tool_set_mode", $("tlModeSel").value).then(function(st){
+      S = st; renderTools();
+    }).catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  $("page-tools").addEventListener("click", function(ev){
+    var t = ev.target;
+    if(t && t.classList && t.classList.contains("src-del") && t.dataset.tldel){
+      var m = t.dataset.tldel, path = t.dataset.tlpath;
+      var spec = TL_MODES[m];
+      var files = (S.tool[spec.filesKey] || []).filter(function(x){ return x !== path; });
+      api("tool_set_files", m, files).then(function(st){
+        S = st; renderTools(); toast("已移除文件", "ok");
+      }).catch(function(e){ toast(e.message || String(e), "err"); });
+    }
+  });
+  $("btnTlPick").addEventListener("click", function(){
+    var spec = TL_MODES[tlMode()];
+    if(S.file_picker_mode === "浏览器内置"){ browserPick(spec.pick); return; }
+    api("tool_pick_files", tlMode()).then(function(st){ S = st; renderTools(); })
       .catch(function(e){ toast(e.message || String(e), "err"); });
   });
-  $("btnTlWordPick").addEventListener("click", function(){
-    if(S.file_picker_mode === "浏览器内置"){ browserPick("tool-word"); return; }
-    api("tool_pick_files", "word").then(function(st){ S = st; renderTools(); })
+  $("tlFmtSel").addEventListener("change", function(){
+    api("tool_set_format", tlMode(), $("tlFmtSel").value).then(function(st){ S = st; })
       .catch(function(e){ toast(e.message || String(e), "err"); });
   });
-  $("tlExcelFmt").addEventListener("change", function(){
-    api("tool_set_format", "excel", $("tlExcelFmt").value).then(function(st){ S = st; })
-      .catch(function(e){ toast(e.message || String(e), "err"); });
-  });
-  $("tlWordFmt").addEventListener("change", function(){
-    api("tool_set_format", "word", $("tlWordFmt").value).then(function(st){ S = st; })
-      .catch(function(e){ toast(e.message || String(e), "err"); });
-  });
-  function convert(kind, fmtSel, resId, label){
+  $("btnTlRun").addEventListener("click", function(){
+    var m = tlMode();
+    $("btnTlRun").disabled = true;
     toast("转换中…");
-    api("tool_convert", kind).then(function(res){
+    api("tool_convert", m).then(function(res){
       var lines = [];
       (res.done || []).forEach(function(d){ lines.push("✓ " + esc(d.out)); });
       (res.skipped || []).forEach(function(s){ lines.push("✗ " + esc(s.src) + "（" + esc(s.reason) + "）"); });
-      $(resId).innerHTML = "成功 " + res.ok + "、跳过 " + res.skip
+      $("tlResult").innerHTML = "成功 " + res.ok + "、跳过 " + res.skip
         + "（引擎 " + esc(res.engine || "-") + "）<br>" + lines.join("<br>");
-      toast(label + "完成：成功 " + res.ok, res.ok > 0 ? "ok" : "err");
-    }).catch(function(e){ toast(e.message || String(e), "err"); });
-  }
-  $("btnTlExcelRun").addEventListener("click", function(){
-    convert("excel", "tlExcelFmt", "tlExcelResult", "批量转 Excel");
-  });
-  $("btnTlWordRun").addEventListener("click", function(){
-    convert("word", "tlWordFmt", "tlWordResult", "批量转 Word");
+      toast("批量转换完成：成功 " + res.ok, res.ok > 0 ? "ok" : "err");
+      renderTools();
+    }).catch(function(e){ toast(e.message || String(e), "err"); renderTools(); });
   });
 })();
+
+/* ================= 数据处理：校验明细表 ================= */
+function chkRowsHtml(rows){
+  if(!rows || !rows.length) return "";
+  var head = '<tr><th>月份</th><th>区域/来源</th><th>指标代码</th><th>指标名称</th><th>异常说明</th><th>当前值1</th><th>调整前值2</th><th>地区合计值3</th><th>白名单</th></tr>';
+  var body = rows.map(function(x){
+    var cls = x.wl ? "chk-wl" : ("chk-err");
+    if(x.region === "会计补录" || x.region === "会计父项补录") cls = "chk-bf";
+    return '<tr class="' + cls + '"><td>' + esc(x.period) + '</td><td>' + esc(x.region)
+      + '</td><td>' + esc(x.code) + '</td><td>' + esc(x.name)
+      + '</td><td>' + esc(x.detail) + '</td><td>' + x.v1 + '</td><td>' + x.v2
+      + '</td><td>' + x.v3 + '</td><td>' + (x.wl ? "是" : "") + '</td></tr>';
+  }).join("");
+  return '<div style="max-height:340px; overflow:auto; border:1px solid var(--border); margin-top:6px; background:var(--surface)">'
+    + '<table class="chk-table" style="margin-top:0">' + head + body + '</table></div>';
+}
 
 /* ================= 结果表（可编辑） ================= */
 function renderInfo(){
@@ -2233,7 +2392,12 @@ function submitUpload(kind, items){
       return api("dp_set_paths", "sources", "", ps).then(function(st){ S = st; renderDp(); toast("已添加 " + ps.length + " 个源文件", "ok"); });
     if(kind === "tool-excel" || kind === "tool-word"){
       var k = (kind === "tool-excel") ? "excel" : "word";
-      return api("tool_set_files", k, ps).then(function(st){ S = st; renderTools(); toast("已添加 " + ps.length + " 个文件", "ok"); });
+      return api("tool_set_files", k, ps).then(function(st){
+        S = st;
+        if(tlMode() !== k){ return api("tool_set_mode", k).then(function(s2){ S = s2; renderTools(); }); }
+        renderTools();
+        toast("已添加 " + ps.length + " 个文件", "ok");
+      });
     }
     var target = (kind === "images-scan") ? "scan" : "ocr";
     return api("add_image_paths", ps, target).then(function(n){
