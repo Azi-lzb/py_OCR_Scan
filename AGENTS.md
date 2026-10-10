@@ -13,6 +13,18 @@
 - 用户当前主线流程：OCR 识别 → 导出 Excel（按标题）→ 数据处理 → 宽表汇总+写入目标。
   用户需对旧批次照片**重新识别+重新导出**才能拿到新 sheet 命名与几何修复效果。
 
+## Git 模式
+
+- 远端：`https://github.com/Azi-lzb/py_OCR_Scan`；分支模型 **main（主干）/ desktop（本机）/ laptop（另一台机器）**，
+  本机固定在 `desktop` 分支工作。
+- 同步套路（用户要求"同步到 main"时）：desktop 上提交 → `git push origin desktop` →
+  `git push origin desktop:main`（main 只做快进，不直接在 main 上开发）。
+- git 操作同样**只在用户明确要求时做**；commit message 用中文、首行概括本次功能/修复。
+- 入库范围：源码 + tests 的图片与真值；**不入库**：dist/build、.venv、`core/data/`（用户运行时数据）、
+  `external/`（用户真实照片与手工表）、`tests/data/*.xlsx` 中间产物、`~$*` Office 锁文件。
+- 提交前 `git status --porcelain` 过一眼：临时补丁脚本（_*.py）、截图等调试产物删掉或加 ignore，
+  不带进提交。
+
 ## 打包（双壳 onedir，当前 380.0 / 377.9 MB）
 
 - `shell-pywebview/build_exe.py`、`shell-flask/build_exe.py`：PyInstaller onedir，`--noconsole`（flask 保留控制台）。
