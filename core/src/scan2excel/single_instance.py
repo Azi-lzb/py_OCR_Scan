@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-_MUTEX_NAME = "Local\\ScanToExcel_SingleInstance_v1"
+_MUTEX_NAME = "Local\\OCR_Tools_SingleInstance_v1"
 _handle = None
 
 

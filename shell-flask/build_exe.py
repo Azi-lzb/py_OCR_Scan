@@ -2,8 +2,8 @@
 """Flask 外壳打包（PyInstaller onedir）。
 
 用法：python build_exe.py
-产物：dist/ScanToExcel-Flask/ —— 文件夹版（与 pywebview 壳一致）：
-    ScanToExcel-Flask.exe + _internal（依赖与模型）+ core/data（config/模板种子）。
+产物：dist/OCR_Tools-Flask/ —— 文件夹版（与 pywebview 壳一致）：
+    OCR_Tools-Flask.exe + _internal（依赖与模型）+ core/data（config/模板种子）。
     core/data 里的 config.xlsx 与 国库报表.xlsx 是种子：打包时"不存在才复制"，
     用户后续修改不会被重建覆盖。双击 exe 启动本地服务并自动开浏览器。
 """
@@ -20,7 +20,7 @@ if not (CORE / "src" / "scan2excel").is_dir():
     raise SystemExit(f"[错误] 未找到业务核心：{CORE}\\src\\scan2excel")
 if not (CORE / "frontend" / "web" / "index.html").is_file():
     raise SystemExit("[错误] 未找到前端 index.html")
-NAME = "ScanToExcel-Flask"
+NAME = "OCR_Tools-Flask"
 SEP = ";" if sys.platform == "win32" else ":"
 
 # 打包内置的种子数据（相对发行目录）：不存在才复制，不覆盖用户修改

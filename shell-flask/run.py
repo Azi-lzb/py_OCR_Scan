@@ -60,7 +60,7 @@ def main() -> int:
     url = f"http://127.0.0.1:{port}/"
     if not no_browser:
         threading.Timer(1.0, lambda: open_browser(url)).start()
-    print(f"ScanToExcel (Flask) 服务已启动：{url}")
+    print(f"OCR_Tools (Flask) 服务已启动：{url}")
     app.run(host="127.0.0.1", port=port, debug=False)
     return 0
 

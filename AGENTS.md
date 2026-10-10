@@ -1,4 +1,4 @@
-# ScanToExcel — Agent 工作须知
+# OCR_Tools — Agent 工作须知
 
 本地离线 OCR 工具：拍照/扫描的会计月计表 → Excel（勾稽校验）→ 宽表汇总 → 录入系统。
 架构 = core/（唯一业务核心）+ shell-pywebview/（桌面壳，主力）+ shell-flask/（浏览器壳，备用/未来 Linux）。
@@ -83,6 +83,6 @@ base64 → `upload_files` 落盘 data/uploads → 显式路径进 choose_images/
   （`handler(*args)` 展开），单个数组参数才需双层 [[...]]。
 - 前端改动必跑 `tests/check_frontend_js.py`（node --check）；"跨行字符串 WARN"是既有误报可忽略。
 - 打包版冒烟：pywebview exe 无外部接口，需 SetProcessDPIAware 统一物理坐标 + 截图定位 +
-  mouse_event 真实点击；exe 的数据在 **dist/ScanToExcel/core/data**（不是项目根）。
+  mouse_event 真实点击；exe 的数据在 **dist/OCR_Tools/core/data**（不是项目根）。
   **注意 Flask 服务的 Tk 对话框会弹在屏幕上拦截点击**，测试前先 ctypes EnumWindows 清残留。
 - 用户正被 WPS/Excel 编辑的文件（~$ 锁文件）不要动。

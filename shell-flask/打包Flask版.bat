@@ -1,7 +1,7 @@
 @echo off
 rem ============================================================
-rem  ScanToExcel packaging script (Flask shell, onefile exe)
-rem  Produces dist\ScanToExcel-Flask.exe and prints its size.
+rem  OCR_Tools packaging script (Flask shell, onefile exe)
+rem  Produces dist\OCR_Tools-Flask.exe and prints its size.
 rem ============================================================
 setlocal EnableExtensions
 cd /d "%~dp0"
@@ -39,6 +39,6 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo Output: %~dp0dist\ScanToExcel-Flask.exe
+echo Output: %~dp0dist\OCR_Tools-Flask.exe
 pause
 endlocal

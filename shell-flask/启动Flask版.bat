@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  ScanToExcel launcher (Flask browser shell)
+rem  OCR_Tools launcher (Flask browser shell)
 rem ============================================================
 setlocal EnableExtensions
 cd /d "%~dp0"

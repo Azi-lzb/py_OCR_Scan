@@ -1,4 +1,4 @@
-# ScanToExcel — 拍照表格转 Excel（本地离线 OCR 小工具）
+# OCR_Tools — 拍照表格转 Excel（本地离线 OCR 小工具）
 
 把**带打印框线的纸质表格**拍成照片，本地识别成可校对的表格，一键导出 Excel。
 全程离线运行（OCR 模型内置），适合"手工录入系统前先录 Excel 做校验"的场景。
@@ -44,8 +44,8 @@ python -m venv .venv
 ### 3. 打包成免安装 exe（可选）
 
 ```
-shell-pywebview\打包ScanToExcel.bat     → dist\ScanToExcel.exe       （约 190 MB）
-shell-flask\打包Flask版.bat             → dist\ScanToExcel-Flask.exe （约 189 MB）
+shell-pywebview\打包ScanToExcel.bat     → dist\OCR_Tools.exe       （约 190 MB）
+shell-flask\打包Flask版.bat             → dist\OCR_Tools-Flask.exe （约 189 MB）
 ```
 
 单文件绿色版（PyInstaller onefile）：前端页面与 RapidOCR 模型全部内嵌，
