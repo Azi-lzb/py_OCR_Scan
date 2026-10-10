@@ -79,25 +79,39 @@ def main() -> int:
     assert table["title"] == "盘点表(修订)"
     print(f"✅ update_cell/update_title：{old} → 改过的值，标题 → 盘点表(修订)")
 
-    # 5) 导出 Excel（单张工作簿：每图一个 Sheet，覆盖不追加）
+    # 5) 导出 Excel（单张工作簿：每图一个 Sheet，覆盖不追加；sheet 名=文件名）
     out = os.path.join(DATA, "_webapi_test.xlsx")
     if os.path.exists(out):
         os.remove(out)
-    res = api.export_excel(path=out)
+    res = api.export_excel(path=out, naming="file")
     assert res["ok"] and os.path.exists(out), res
     from openpyxl import load_workbook
     wb = load_workbook(out)
-    assert wb.sheetnames == ["inventory_flat", "production_merge", "notes_photo"], wb.sheetnames
+    # 「汇总检查」sheet 固定插在最前，其后为各照片 sheet
+    assert wb.sheetnames == ["汇总检查", "inventory_flat", "production_merge",
+                             "notes_photo"], wb.sheetnames
+    sum_ws = wb["汇总检查"]
+    assert sum_ws["A1"].value == "序号" and sum_ws["G1"].value == "勾稽结论"
     ws = wb["inventory_flat"]
-    # 标题在第 1 行（合并居中），表头第 2 行，数据第 3 行起
-    assert ws["A1"].value == "盘点表(修订)", ws["A1"].value
-    assert any("A1" in str(m) for m in ws.merged_cells.ranges), "标题行未合并"
-    assert ws["A2"].value == "序号", ws["A2"].value
-    assert ws["A3"].value == "改过的值", ws["A3"].value
-    # 合并单元格还原检查（表头从第 2 行开始）
+    # 无模板页：普通 sheet（首行表头，第一行数据从第 2 行起）
+    assert ws["A1"].value == "序号", ws["A1"].value
+    assert ws["A2"].value == "改过的值", ws["A2"].value
+    # 合并单元格还原检查
     merges = [str(m) for m in wb["production_merge"].merged_cells.ranges]
-    assert any("A2" in m for m in merges), f"合并单元格未还原: {merges}"
-    print("✅ export_excel：一张工作簿 3 个 Sheet，标题/合并单元格正确")
+    assert any("A1" in m for m in merges), f"合并单元格未还原: {merges}"
+    print("✅ export_excel(file)：一张工作簿 3 个 Sheet，表头/合并正确")
+
+    # 5a) 按表标题命名导出
+    out_t = os.path.join(DATA, "_webapi_test_title.xlsx")
+    if os.path.exists(out_t):
+        os.remove(out_t)
+    res_t = api.export_excel(path=out_t, naming="title")
+    assert res_t["ok"], res_t
+    wb_t = load_workbook(out_t)
+    assert "盘点表(修订)" in wb_t.sheetnames, wb_t.sheetnames
+    wb_t.close()
+    os.remove(out_t)
+    print("✅ export_excel(title)：sheet 名=表标题")
 
     # 5b) 同路径再导一次：应整体覆盖而不是追加 Sheet
     res2 = api.export_excel(path=out)

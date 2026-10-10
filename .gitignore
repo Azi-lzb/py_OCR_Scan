@@ -21,3 +21,6 @@
 /tests/**/_diag/
 /data/templates/
 /core/data/templates/
+
+# ==== 用户真实样例（照片/手工表，不入库）====
+/external/

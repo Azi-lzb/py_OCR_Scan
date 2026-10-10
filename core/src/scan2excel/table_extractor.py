@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -98,8 +99,18 @@ class TableStructure:
                         self.title_zones.append(("B", x0, y0, x1 - x0, top - y0))
 
 
-def imread_unicode(path: str) -> Optional[np.ndarray]:
-    """读取图片（兼容中文路径与 EXIF 旋转），返回 BGR 数组。"""
+def imread_unicode(path: str) -> np.ndarray:
+    """读取图片（兼容中文路径与 EXIF 旋转），返回 BGR 数组。
+
+    失败时抛 ImageReadError，错误文本带真实原因（扩展名 + 底层异常），
+    不再静默返回 None——「文件损坏」必须能分辨是 HEIC、超大像素还是真损坏。
+    """
+    _register_extra_decoders()
+    ext = os.path.splitext(path)[1].lower() or "(无扩展名)"
+    if ext in (".heic", ".heif") and not _heif_available:
+        raise ImageReadError(
+            f"无法读取图片（{ext}）：缺少 HEIC 解码组件 pillow-heif，"
+            "请重拍为 JPG 或安装该组件")
     try:
         from PIL import Image, ImageOps
         img = Image.open(path)
@@ -107,8 +118,38 @@ def imread_unicode(path: str) -> Optional[np.ndarray]:
         if img.mode != "RGB":
             img = img.convert("RGB")
         return cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+    except Exception as exc:
+        raise ImageReadError(
+            f"无法读取图片（{ext}）：{type(exc).__name__}: {exc}") from exc
+
+
+class ImageReadError(ValueError):
+    """图片解码失败，message 含真实底层原因。"""
+
+
+_heif_registered = False
+_heif_available = False
+
+
+def _register_extra_decoders() -> None:
+    """注册扩展解码器；只成功一次，缺失时静默跳过。"""
+    global _heif_registered, _heif_available
+    if _heif_registered:
+        return
+    _heif_registered = True
+    try:
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+        _heif_available = True
+    except ImportError:
+        pass
+    # 手机 2 亿像素模式超过 PIL 默认 1.79 亿像素上限会直接拒绝解码；
+    # 本地离线工具处理的是用户自己的文件，解除该限制。
+    try:
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = None
     except Exception:
-        return None
+        pass
 
 
 def _limit_side(img: np.ndarray) -> np.ndarray:

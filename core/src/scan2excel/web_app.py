@@ -19,10 +19,13 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
+
 from openpyxl.utils import get_column_letter
 from typing import Any, Dict, List, Optional
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp",
+              ".heic", ".heif"}   # HEIC 需 pillow-heif，缺失时读取错误会给出真实原因
 
 
 class TkRunner:
@@ -76,20 +79,33 @@ class WebApi:
             "has_result": False,
             "high_accuracy": False,    # 高精度识别档（server rec 模型）
             "templates": [],           # 月计表模板名列表
-            "template_auto": True,     # 识别时自动套用模板
+            "scan_mode": "enhanced",   # 扫描件输出模式（enhanced/bw/gray/origin）
+            "scan_busy": False,        # 扫描件生成中
+            "scan_done": 0,            # 已生成的张数（进度）
+            "scan_images": [],         # 扫描王的照片列表（与 OCR 列表相互独立）
+            "dp": {"source": "", "config": "", "template": ""},  # 数据处理页的文件选择
+            "template_auto": True,     # 自动匹配模板（设置可关：只用每图手动指定的 sheet）
+            "auto_rotate": True,       # 自动纠正页面方向（设置可关：照片已摆正时省数秒/张）
             "log": [],
             "version": "25.10.8.0",
         }
         self._pages: List = []     # TablePage 对象（含预览图字节，不进 state）
         self._previews: Dict[str, bytes] = {}   # path → 加图即生成的原图预览 JPEG
         self._thumbs: Dict[str, bytes] = {}     # path → 列表缩略图（更小）
+        self._scans: List = []                 # index → 扫描件 JPEG 字节
+        self._scan_previews: Dict[tuple, bytes] = {}   # (index, mode, n) → 预览 JPEG
         self._templates: List = []              # 已加载的月计表模板
         self._templates_dir = self.root / "data" / "templates"
+        self._exports_dir = self.root / "data" / "exports"     # 识别结果默认存放处
+        self._config_xlsx = self.root / "data" / "config" / "config.xlsx"
+        self._guoku_tpl = self.root / "data" / "transforms" / "国库模板.xlsx"
         try:
             self._templates_dir.mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
         self.state["templates_dir"] = str(self._templates_dir)
+        self.state["exports_dir"] = str(self._exports_dir)
+        self.state["dp"]["config"] = str(self._config_xlsx)   # UI 显示用绝对路径
         self._load_templates()
         self._cancel = threading.Event()
         self._window = None        # pywebview 窗口引用（attach_window 注入）
@@ -100,6 +116,228 @@ class WebApi:
     # ------------------------------------------------------------------ #
     def get_state(self) -> Dict[str, Any]:
         return self.state
+
+    def set_scan_mode(self, mode: str) -> Dict[str, Any]:
+        """扫描件输出模式：enhanced（彩色增强）/ bw（黑白）/ gray / origin。"""
+        if mode in ("enhanced", "bw", "gray", "origin"):
+            self.state["scan_mode"] = mode
+            self._log("扫描件模式：" + mode)
+        return self.state
+
+    def render_scans(self) -> Dict[str, Any]:
+        """后台线程：把列表里每张照片渲染成扫描件（当前模式）。"""
+        if self.state.get("scan_busy"):
+            return self.state
+        if not self.state["scan_images"]:
+            return self.state
+        self.state["scan_busy"] = True
+        self.state["scan_done"] = 0
+
+        def worker() -> None:
+            try:
+                mode = self.state.get("scan_mode", "enhanced")
+                n = len(self.state["scan_images"])
+                self._scans = [None] * n
+                self._scan_previews.clear()
+                from .service import Scan2ExcelService
+                svc = Scan2ExcelService()
+                for idx in range(n):
+                    if self._cancel.is_set():
+                        break
+                    info = self.state["scan_images"][idx]
+                    self._log(f"扫描件 {idx + 1}/{n}：{info['name']}")
+                    try:
+                        arr = svc.render_scan(info["path"], mode)
+                        import cv2
+                        ok, buf = cv2.imencode(".jpg", arr,
+                                               [cv2.IMWRITE_JPEG_QUALITY, 92])
+                        self._scans[idx] = buf.tobytes() if ok else None
+                    except Exception as exc:  # noqa: BLE001
+                        self._scans[idx] = None
+                        self._log(f"扫描件失败：{info['name']} —— {exc}")
+                    self.state["scan_done"] = idx + 1
+                done = sum(1 for b in self._scans if b)
+                self.state["status"] = f"扫描件生成完成：{done}/{n}"
+                self._log(self.state["status"])
+            finally:
+                self.state["scan_busy"] = False
+        threading.Thread(target=worker, daemon=True).start()
+        return self.state
+
+    def get_scan_preview(self, index: int) -> str:
+        """单张扫描件预览（dataURL，长边压到 1400 内）。"""
+        if not (0 <= index < len(self._scans)) or not self._scans[index]:
+            return ""
+        key = (index, self.state.get("scan_mode", ""), len(self._scans))
+        cached = self._scan_previews.get(key)
+        if not cached:
+            import cv2
+            arr = cv2.imdecode(
+                np.frombuffer(self._scans[index], dtype=np.uint8),
+                cv2.IMREAD_COLOR)
+            if arr is None:
+                return ""
+            h, w = arr.shape[:2]
+            scale = 1400.0 / max(h, w)
+            if scale < 1.0:
+                arr = cv2.resize(arr, (int(w * scale), int(h * scale)),
+                                 interpolation=cv2.INTER_AREA)
+            ok, buf = cv2.imencode(".jpg", arr, [cv2.IMWRITE_JPEG_QUALITY, 88])
+            if not ok:
+                return ""
+            cached = buf.tobytes()
+            self._scan_previews[key] = cached
+        import base64
+        return "data:image/jpeg;base64," + base64.b64encode(cached).decode("ascii")
+
+    def export_scan_jpg(self) -> Dict[str, Any]:
+        """扫描件逐张存 JPG：第一张照片旁的「扫描件_时间戳」文件夹。"""
+        outs = [b for b in self._scans if b]
+        if not outs:
+            raise RuntimeError("还没有扫描件——先点「生成扫描件」")
+        first = (self.state["scan_images"][0]["path"]
+                 if self.state["scan_images"] else ".")
+        out_dir = Path(first).parent / f"扫描件_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for idx, buf in enumerate(self._scans):
+            if not buf:
+                continue
+            name = Path(self.state["scan_images"][idx]["name"]).stem
+            (out_dir / f"{idx + 1:02d}_{name}.jpg").write_bytes(buf)
+            n += 1
+        self._log(f"已导出 {n} 张扫描件 JPG：{out_dir}")
+        return {"ok": True, "dir": str(out_dir), "count": n}
+
+    def export_scan_pdf(self, path: str = "") -> Dict[str, Any]:
+        """扫描件合并成一个 PDF（系统对话框选保存位置）。"""
+        outs = [b for b in self._scans if b]
+        if not outs:
+            raise RuntimeError("还没有扫描件——先点「生成扫描件」")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = path or self._dialog_save_file(f"扫描件_{stamp}.pdf", kind="pdf")
+        if not out:
+            return {"ok": False, "canceled": True}
+        if not out.lower().endswith(".pdf"):
+            out += ".pdf"
+        from io import BytesIO
+        from PIL import Image
+        imgs = []
+        for buf in outs:
+            im = Image.open(BytesIO(buf))
+            if im.mode != "RGB":
+                im = im.convert("RGB")
+            imgs.append(im)
+        imgs[0].save(out, save_all=True, append_images=imgs[1:],
+                     resolution=150.0)
+        self._log(f"已导出扫描件 PDF（{len(imgs)} 页）：{out}")
+        return {"ok": True, "path": str(out), "count": len(imgs)}
+
+    def dp_pick(self, which: str = "source") -> Dict[str, Any]:
+        """数据处理页：选择 源文件/规则配置/国库模板。"""
+        if self._window is not None:
+            try:
+                import webview
+                paths = self._window.create_file_dialog(
+                    webview.OPEN_DIALOG,
+                    file_types=("Excel 工作簿 (*.xlsx;*.xlsm)",))
+                if isinstance(paths, (list, tuple)):
+                    paths = paths[0] if paths else ""
+                path = str(paths) if paths else ""
+            except Exception:
+                path = ""
+        else:
+            path = _tk_open_xlsx("选择文件",
+                                 initialdir=str(self._templates_dir.parent))
+        if path:
+            self.state["dp"][which] = path
+            self._log(f"数据处理：已选择{ {'source': '源文件', 'config': '规则配置', 'template': '国库模板', 'target': '目标文件'}.get(which, which)}：{path}")
+        return self.state
+
+    def dp_run(self) -> Dict[str, Any]:
+        """宽表规则汇总（pytools 1-4 同款）：源文件 → 宽表 xlsx + 按规则去重追加到目标簿。"""
+        from .data_process import load_rules_v2, wide_summary
+        src = self._dp_source()
+        cfg = self._config_xlsx
+        if not cfg.is_file():
+            raise RuntimeError(f"未找到规则配置：{cfg}")
+        rules = load_rules_v2(cfg)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = src.parent / f"宽表汇总_{stamp}.xlsx"
+        res = wide_summary(src, rules, Path(out))
+        self._log(f"宽表汇总完成：{res['rows']} 行 x {res['cols']} 列 → {out}")
+        for t in res.get("targets", []):
+            if t.get("reason") == "header_mismatch":
+                self._log(f"目标写入跳过（表头不匹配）：{t['wb']}::{t['sheet']}")
+            elif t.get("written"):
+                self._log(f"目标写入：{t['wb']}::{t['sheet']} 新增 {t['added']} 行"
+                          f"（输入 {t['input']}，批内去重后 {t['batch']}）")
+            else:
+                self._log(f"目标写入：{t['wb']}::{t['sheet']} 无新增行")
+        return {"ok": True, "path": res["path"], "rows": res["rows"],
+                "cols": res["cols"], "date": str(res["date"] or ""),
+                "targets": res.get("targets", [])}
+
+    def _latest_export(self) -> Optional[Path]:
+        """导出目录里最新的「识别结果」xlsx（没有则 None）。
+
+        只认 识别结果_*.xlsx 命名——宽表/长表等生成产物不会被误当源文件。
+        """
+        if not self._exports_dir.is_dir():
+            return None
+        files = [f for f in self._exports_dir.glob("识别结果_*.xlsx")
+                 if f.is_file()]
+        return max(files, key=lambda f: f.stat().st_mtime) if files else None
+
+    def _dp_source(self) -> Path:
+        """数据处理源文件：只认手动选择。"""
+        src = self.state["dp"].get("source", "")
+        if src and Path(src).is_file():
+            return Path(src)
+        raise RuntimeError("请先点击「选择源文件」选择识别结果 xlsx")
+
+    def get_summary(self) -> Dict[str, Any]:
+        """汇总检查页数据：每张照片的勾稽（条件格式）触发一览。
+
+        bad 携带不平行的行号与科目（1 基行号），供前端免翻页检查；
+        未套模板/未识别的页如实标注（它们没有勾稽结论）。
+        """
+        items: List[Dict[str, Any]] = []
+        for idx, info in enumerate(self.state["images"]):
+            pg = self._pages[idx] if idx < len(self._pages) else None
+            bad: List[Dict[str, Any]] = []
+            if pg is not None and getattr(pg, "check_rows", None):
+                rows = pg.rows or []
+                for r in pg.check_rows:
+                    row = rows[r] if 0 <= r < len(rows) else None
+                    bad.append({
+                        "row": r + 1,
+                        "code": str(row[0]) if row and len(row) > 0 else "",
+                        "name": str(row[1]) if row and len(row) > 1 else "",
+                    })
+            items.append({
+                "index": idx,
+                "name": info.get("name", ""),
+                "status": info.get("status", ""),
+                "n_rows": info.get("n_rows", 0),
+                "n_cols": info.get("n_cols", 0),
+                "elapsed": info.get("elapsed", 0),
+                "template": str(info.get("template") or ""),
+                "title": str(getattr(pg, "title", "") or "") if pg else "",
+                "bad": bad,
+                "mismatch": info.get("row_mismatch") or {},
+            })
+        n_ok = sum(1 for it in items
+                   if it["status"] == "完成" and it["template"] and not it["bad"])
+        return {
+            "items": items,
+            "stats": {
+                "total": len(items),
+                "templated": sum(1 for it in items if it["template"]),
+                "bad": sum(1 for it in items if it["bad"]),
+                "ok": n_ok,
+            },
+        }
 
     def get_preview(self) -> str:
         """当前图的预览（dataURL，photo/overlay 由 preview_mode 决定）。
@@ -427,8 +665,15 @@ class WebApi:
         return self.state
 
     def set_template_auto(self, on: bool) -> Dict[str, Any]:
+        """自动匹配模板开关（设置页）。关闭后仅用每张图显式指定的 sheet。"""
         self.state["template_auto"] = bool(on)
-        self._log("模板自动匹配：" + ("开启" if on else "关闭"))
+        self._log("自动匹配模板：" + ("开启" if on else "关闭（仅用每张图手动指定的 sheet）"))
+        return self.state
+
+    def set_auto_rotate(self, on: bool) -> Dict[str, Any]:
+        """自动旋转开关（设置页）。关闭后跳过方向探测，要求照片方向已摆正。"""
+        self.state["auto_rotate"] = bool(on)
+        self._log("自动旋转：" + ("开启" if on else "关闭（跳过方向探测，请确保照片方向正确）"))
         return self.state
 
     def set_page_template(self, index: int, name: str) -> Dict[str, Any]:
@@ -465,11 +710,12 @@ class WebApi:
         pages = getattr(tpl, "pages", []) or []
         return [getattr(p, "page_name", "") for p in pages]
 
-    def get_thumb(self, index: int) -> str:
+    def get_thumb(self, index: int, target: str = "ocr") -> str:
         """列表缩略图（约 96px）dataURL；按路径缓存，复用原图预览解码。"""
-        if not (0 <= index < len(self.state["images"])):
+        img_list = self._img_list(target)
+        if not (0 <= index < len(img_list)):
             return ""
-        path = self.state["images"][index]["path"]
+        path = img_list[index]["path"]
         data = self._thumbs.get(path)
         if data:
             return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
@@ -478,8 +724,6 @@ class WebApi:
             try:
                 from .service import imread_unicode, _encode_jpeg
                 img = imread_unicode(path)
-                if img is None:
-                    return ""
                 base = _encode_jpeg(img)
                 self._previews[path] = base
             except Exception:
@@ -494,14 +738,21 @@ class WebApi:
     # ------------------------------------------------------------------ #
     # 照片列表
     # ------------------------------------------------------------------ #
-    def choose_images(self) -> int:
-        """系统对话框选照片（可多选），追加进列表。"""
-        paths = self._dialog_open_images()
-        return self.add_image_paths(paths)
+    def _img_list(self, target: str) -> List[Dict[str, Any]]:
+        """按 target 取对应照片列表：ocr / scan（两套独立）。"""
+        return (self.state["scan_images"] if target == "scan"
+                else self.state["images"])
 
-    def add_image_paths(self, paths: Optional[List[str]]) -> int:
+    def choose_images(self, target: str = "ocr") -> int:
+        """系统对话框选照片（可多选），追加进对应列表。"""
+        paths = self._dialog_open_images()
+        return self.add_image_paths(paths, target=target)
+
+    def add_image_paths(self, paths: Optional[List[str]],
+                        target: str = "ocr") -> int:
         if not paths:
             return 0
+        img_list = self._img_list(target)
         expanded: List[str] = []
         for p in paths:
             p = str(p)
@@ -515,16 +766,16 @@ class WebApi:
             if ext not in IMAGE_EXTS or not os.path.isfile(p):
                 self._log(f"跳过非图片文件：{os.path.basename(p)}")
                 continue
-            if any(img["path"] == p for img in self.state["images"]):
+            if any(img["path"] == p for img in img_list):
                 continue
-            self.state["images"].append({
+            img_list.append({
                 "path": p, "name": os.path.basename(p),
                 "status": "等待", "mode": "table", "n_rows": 0, "n_cols": 0,
                 "elapsed": 0.0, "error": "", "warped": False, "borderless": False,
                 "min_score": 1.0, "ignore_regions": [],
                 "template_name": "", "template_page": "",
                 "template": "", "warning": "",
-                "fill_mode": "vlookup", "row_mismatch": {},
+                "fill_mode": "vlookup", "row_mismatch": {}, "checks": [],
             })
             added += 1
             if p not in self._previews:
@@ -533,14 +784,17 @@ class WebApi:
                     img = imread_unicode(p)
                     if img is not None:
                         self._previews[p] = _encode_jpeg(img)
-                except Exception:
-                    pass   # 预览生成失败不影响识别；识别后仍有结果预览
+                except Exception as exc:
+                    # 预览失败不影响加入列表，但真实原因要立刻可见，
+                    # 免得到识别阶段只剩一句笼统的"文件损坏"。
+                    self._log(f"预览生成失败：{os.path.basename(p)} → {exc}")
         if added:
-            self._log(f"已添加 {added} 张照片")
-            if self.state["current"] < 0:
-                self.set_current(0)
-            else:
-                self._refresh_status()
+            self._log(f"已添加 {added} 张照片（{target}）")
+            if target == "ocr":
+                if self.state["current"] < 0:
+                    self.set_current(0)
+                else:
+                    self._refresh_status()
         return added
 
     @staticmethod
@@ -568,14 +822,18 @@ class WebApi:
             pdf.close()
         return paths
 
-    def remove_image(self, index: int) -> Dict[str, Any]:
-        if self.state["busy"]:
+    def remove_image(self, index: int, target: str = "ocr") -> Dict[str, Any]:
+        img_list = self._img_list(target)
+        if target == "ocr" and self.state["busy"]:
             raise RuntimeError("识别进行中，无法删除照片")
-        if 0 <= index < len(self.state["images"]):
-            self.state["images"].pop(index)
-            self._sync_pages()
-            if self.state["current"] >= len(self.state["images"]):
-                self.set_current(len(self.state["images"]) - 1)
+        if target == "scan" and self.state.get("scan_busy"):
+            raise RuntimeError("扫描件生成中，无法删除照片")
+        if 0 <= index < len(img_list):
+            img_list.pop(index)
+            if target == "ocr":
+                self._sync_pages()
+                if self.state["current"] >= len(self.state["images"]):
+                    self.set_current(len(self.state["images"]) - 1)
         self._refresh_status()
         return self.state
 
@@ -590,7 +848,18 @@ class WebApi:
         self.state["table"] = None
         self.state["has_result"] = False
         self._refresh_status()
-        self._log("已清空照片列表")
+        self._log("已清空照片列表（OCR）")
+        return self.state
+
+    def clear_scans(self) -> Dict[str, Any]:
+        """清空扫描王的照片列表与扫描结果（与 OCR 列表相互独立）。"""
+        if self.state.get("scan_busy"):
+            raise RuntimeError("扫描件生成中，无法清空列表")
+        self.state["scan_images"].clear()
+        self._scans = []
+        self._scan_previews.clear()
+        self.state["scan_done"] = 0
+        self._log("已清空照片列表（扫描王）")
         return self.state
 
     def set_current(self, index: int) -> Dict[str, Any]:
@@ -610,6 +879,9 @@ class WebApi:
                     "scores": {k: round(v, 3) for k, v in page.scores.items()},
                     "cell_boxes": page.cell_boxes,
                     "borderless": page.borderless,
+                    "checks": list(page.checks or []),
+                    "check_rows": list(page.check_rows or []),
+                    "header_rows": max(1, int(page.header_rows or 1)),
                 }
                 self.state["has_result"] = True
         return self.state
@@ -737,7 +1009,9 @@ class WebApi:
                 def on_step(text: str, _info=info) -> None:
                     self._log(text, detail=True)
 
-                # 模板解析：显式指定 > 全局自动开关；"__none__" = 本页不用模板
+                # 模板解析：图片显式指定的 sheet 优先；"__none__" = 本页不用模板；
+                # 未指定且设置开着自动匹配才全库匹配（关掉后只用手动指定的，
+                # 用户预先把每张图的 sheet 选好可省去匹配开销）
                 tname = str(info.get("template_name") or "")
                 if tname == "__none__":
                     tpl_list, tname = None, ""
@@ -745,7 +1019,7 @@ class WebApi:
                     tpl_list = list(self._templates)
                 else:
                     tpl_list = (list(self._templates)
-                                if self.state.get("template_auto") else None)
+                                if self.state.get("template_auto", True) else None)
                 try:
                     page = service.process_image(
                         info["path"], on_step=on_step,
@@ -756,15 +1030,28 @@ class WebApi:
                         templates=tpl_list,
                         template_name=tname,
                         template_page=info.get("template_page", ""),
-                        fill_mode=info.get("fill_mode", "vlookup"))
-                except Exception:  # process_image 只在"用户取消"时向外抛
-                    info["status"] = "等待"
-                    self._log("已取消识别")
-                    break
+                        fill_mode=info.get("fill_mode", "vlookup"),
+                        auto_rotate=bool(self.state.get("auto_rotate", True)))
+                except Exception as exc:  # noqa: BLE001
+                    # process_image 内部已兜住单图错误，只有"用户取消"会向外抛；
+                    # 其余异常如实报告（此前一律记成"已取消"，掩盖真实原因）
+                    if self._cancel.is_set():
+                        info["status"] = "等待"
+                        self._log("已取消识别")
+                        break
+                    info["status"] = "失败"
+                    info["error"] = f"{type(exc).__name__}: {exc}"
+                    self._log(f"识别失败：{info['name']} —— {info['error']}")
+                    self._log(traceback.format_exc(limit=3))
+                    continue
                 self._store_page(idx, page)
                 if getattr(page, "geometry_saved", False):
                     # 几何比例已写入模板文件：重载，使同批后续图片用上新几何
                     self._load_templates()
+                # 大图识别会累积可观的中间数组（onnx/opencv 分配），
+                # 每张处理完回收一次，避免批量越跑越慢（低内存机器更明显）
+                import gc
+                gc.collect()
                 info.update({
                     "status": "完成" if not page.error else "失败",
                     "mode": page.mode,
@@ -777,6 +1064,7 @@ class WebApi:
                     "warning": page.warning,
                     "fill_mode": page.fill_mode,
                     "row_mismatch": page.row_mismatch or {},
+                    "checks": list(page.checks or []),
                     "min_score": round(page.min_score, 3),
                 })
                 if page.error:
@@ -820,9 +1108,14 @@ class WebApi:
     # ------------------------------------------------------------------ #
     # 导出
     # ------------------------------------------------------------------ #
-    def export_excel(self, path: str = "") -> Dict[str, Any]:
+    def export_excel(self, path: str = "", naming: str = "file") -> Dict[str, Any]:
         """所有识别结果保存进一张工作簿（每张照片一个 Sheet）。
 
+        套用了模板的页从模板复制 sheet——**保留条件格式（勾稽标红）、
+        合并格与命名区域**，打开 Excel 即见规则；未套模板的页按普通
+        方式生成。
+        naming: "file"=sheet 名用文件名（默认）；"title"=优先用表标题
+        （识别出的表格标题，其次模板页名）。
         每次导出生成全新文件：选择已有文件会整体覆盖，绝不追加。
         """
         if self.state["busy"]:
@@ -830,42 +1123,44 @@ class WebApi:
         pages = [pg for pg in self._pages if pg is not None and pg.rows]
         if not pages:
             raise RuntimeError("还没有可导出的识别结果")
-        from .excel_writer import write_workbook
+        if not pages:
+            raise RuntimeError("还没有可导出的识别结果")
+        from .xlsx_template import build_export_workbook, evaluate_checks
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M")
         # 默认目标路径 = 模板目录：导出的 Excel 可直接当模板
         #（定义好命名区域后点模板库「重新扫描」即可）
-        out = path or self._dialog_save_file(f"识别结果_{stamp}.xlsx", kind="xlsx",
-                                             initialdir=str(self._templates_dir))
+        self._exports_dir.mkdir(parents=True, exist_ok=True)
+        # 默认存放：data/exports/（数据处理页源文件默认取这里最新的）
+        out = path or str(self._exports_dir / f"识别结果_{stamp}.xlsx")
         if not out:
             return {"ok": False, "paths": [], "canceled": True}
         if not out.lower().endswith(".xlsx"):
             out += ".xlsx"
 
-        # 模板页导出：基于模板 xlsx 填值——保留命名区域、格式与校验表公式
-        # （勾稽关系在 Excel 中自动计算；本地也求值一次，非零即提示）
-        tpl_pages = [pg for pg in pages if getattr(pg, "template_file", "")]
-        if len(pages) == 1 and tpl_pages:
-            from .xlsx_template import evaluate_checks, fill_template_workbook
-            pg = tpl_pages[0]
-            fill_template_workbook(Path(pg.template_file),
-                                   {pg.template_page or "第1页": pg}, Path(out))
-            checks = evaluate_checks(Path(pg.template_file), Path(out),
-                                     sheets=[pg.template_page or "第1页"])
-            self._log(f"已按模板填值导出：{out}")
-            for c in checks[:5]:
-                self._log("勾稽提示：" + c)
-            self._maybe_register_template(out)
-            return {"ok": True, "paths": [out], "canceled": False,
-                    "checks": checks}
+        naming = "title" if str(naming) == "title" else "file"
+        sheet_titles = build_export_workbook(Path(out), pages, naming=naming)
+        # 「汇总检查」sheet（插在最前）：与「OCR识别结果」页同源的勾稽一览
+        from .xlsx_template import append_summary_sheet
+        append_summary_sheet(Path(out), pages, sheet_titles)
 
-        write_workbook(out, [{"name": pg.name, "title": pg.title,
-                              "plain": pg.mode == "text",
-                              "rows": pg.rows, "merges": pg.merges}
-                             for pg in pages])
-        self._log(f"已导出 Excel：{out}")
+        # 勾稽：对导出文件中"套了模板的 sheet"评估其条件格式规则
+        tpl_sheets = [t for t, pg in zip(sheet_titles, pages)
+                      if getattr(pg, "template_file", "")]
+        checks: List[str] = []
+        if tpl_sheets:
+            checks, _bad_rows = evaluate_checks(None, Path(out), sheets=tpl_sheets)
+        n_tpl = sum(1 for pg in pages if getattr(pg, "template_file", ""))
+        self._log(f"已导出 Excel：{out}（{len(pages)} 个 sheet"
+                  + (f"，其中 {n_tpl} 个按模板导出并保留条件格式" if n_tpl else "")
+                  + "）")
+        for c in checks[:5]:
+            self._log("勾稽提示：" + c)
+        if checks:
+            self.state["status"] = f"导出完成，勾稽不平 {len(checks)} 处（见日志/Excel 标红）"
         self._maybe_register_template(out)
-        return {"ok": True, "paths": [out], "canceled": False}
+        return {"ok": True, "paths": [out], "canceled": False,
+                "checks": checks, "sheets": sheet_titles}
 
     def export_word(self, path: str = "") -> Dict[str, Any]:
         """所有识别结果保存进一个 Word 文档（每页一节，分页符隔开）。
@@ -1084,7 +1379,8 @@ class WebApi:
         if self._window is not None:
             try:
                 import webview
-                flt = ("图片/PDF (*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;*.webp;*.pdf)",)
+                flt = ("图片/PDF (*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;"
+                       "*.webp;*.heic;*.heif;*.pdf)",)
                 paths = self._window.create_file_dialog(
                     webview.OPEN_DIALOG, allow_multiple=True, file_types=flt)
                 if isinstance(paths, str):
@@ -1101,6 +1397,7 @@ class WebApi:
         "txt": ("文本文件 (*.txt)", ".txt", ("文本文件", "*.txt")),
         "md": ("Markdown (*.md)", ".md", ("Markdown", "*.md")),
         "json": ("JSON 文件 (*.json)", ".json", ("JSON 文件", "*.json")),
+        "pdf": ("PDF 文件 (*.pdf)", ".pdf", ("PDF 文件", "*.pdf")),
     }
 
     def _dialog_save_file(self, default_name: str, kind: str = "xlsx",
@@ -1151,10 +1448,29 @@ def _tk_open_images() -> List[str]:
         root.attributes("-topmost", True)
         paths = filedialog.askopenfilenames(
             title="选择要识别的照片/PDF",
-            filetypes=[("图片/PDF", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp *.pdf"),
+            filetypes=[("图片/PDF", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp *.heic *.heif *.pdf"),
                        ("所有文件", "*.*")])
         root.destroy()
         return list(paths)
+    return _TK.run(run)
+
+
+def _tk_open_xlsx(title: str = "选择文件",
+                  initialdir: str = "") -> str:
+    def run():
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        kw = {}
+        if initialdir:
+            kw["initialdir"] = str(initialdir)
+        path = filedialog.askopenfilename(
+            title=title, filetypes=[("Excel 工作簿", "*.xlsx *.xlsm"),
+                                    ("所有文件", "*.*")], **kw)
+        root.destroy()
+        return path
     return _TK.run(run)
 
 

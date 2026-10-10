@@ -17,7 +17,9 @@ import cv2
 import numpy as np
 
 from .ocr_engine import OcrEngine
-from .table_extractor import TableStructure, extract_table, imread_unicode, preprocess
+from .scan_doc import enhance_scan, flatten_page
+from .table_extractor import (ImageReadError, TableStructure, extract_table,
+                              imread_unicode, preprocess)
 
 StepCallback = Callable[[str], None]
 
@@ -92,6 +94,9 @@ class TablePage:
     template_page: str = ""         # 命中的模板工作表名
     fill_mode: str = "vlookup"      # 填充模式：vlookup=按科目对齐 / position=按位置
     geometry_saved: bool = False    # 本次是否为新模板回写了几何比例
+    checks: List[str] = field(default_factory=list)   # 勾稽不平提示（条件格式求值）
+    check_rows: List[int] = field(default_factory=list)  # 勾稽不平的页行号（0 基，界面整行标红）
+    header_rows: int = 1            # 表头行数（模板页来自模板；普通页=1）
     row_mismatch: Dict = field(default_factory=dict)  # 行对齐结果（供界面提示）
     warning: str = ""               # 模板校验等提示信息
     xs: List[int] = field(default_factory=list)   # 列/行边界（有框线模式的网格）
@@ -112,6 +117,7 @@ class TablePage:
             "warped": self.warped, "borderless": self.borderless,
             "template": self.template, "template_page": self.template_page,
             "fill_mode": self.fill_mode, "row_mismatch": self.row_mismatch,
+            "checks": self.checks, "header_rows": self.header_rows,
             "warning": self.warning,
             "min_score": round(self.min_score, 3),
         }
@@ -134,7 +140,8 @@ class Scan2ExcelService:
                       templates: Optional[List] = None,
                       template_name: str = "",
                       template_page: str = "",
-                      fill_mode: str = "vlookup") -> TablePage:
+                      fill_mode: str = "vlookup",
+                      auto_rotate: bool = True) -> TablePage:
         name = os.path.splitext(os.path.basename(path))[0]
         page = TablePage(path=path, name=name)
         self._server_rec = server_rec
@@ -142,11 +149,10 @@ class Scan2ExcelService:
         start = time.time()
         try:
             self._step(on_step, f"读取图片：{os.path.basename(path)}")
-            img = imread_unicode(path)
-            if img is None:
-                raise ValueError("无法读取图片（文件损坏或格式不支持）")
+            img = imread_unicode(path)   # 失败抛 ImageReadError，真实原因随异常上报
 
-            if not force_text:
+            # 方向纠正可按设置关闭（照片已摆正时省去每张数秒的方向探测）
+            if auto_rotate and not force_text:
                 img = self._fix_page_rotation(img, on_step)
 
             if force_text:
@@ -178,9 +184,15 @@ class Scan2ExcelService:
 
                     # 首遍整表 OCR：既用于通用路径，也供 xlsx 模板的
                     # 结构区文本匹配（先把文字拿到手再决定套哪个模板）
+                    # 首遍整表 OCR：既用于通用路径，也供 xlsx 模板的
+                    # 结构区文本匹配（先把文字拿到手再决定套哪个模板）。
+                    # extract_table 已在校正图上跑过完整识别（det_items，
+                    # 坐标系同为 structure.image），直接复用不再识别一遍
                     self._step(on_step, "整表 OCR ...")
                     items = self._filter_regions(
-                        self._engine().recognize_full(structure.image),
+                        list(structure.det_items)
+                        if structure.det_items is not None
+                        else self._engine().recognize_full(structure.image),
                         regions, structure.image.shape)
                     per_cell = self._per_cell_texts(structure, items)
 
@@ -211,42 +223,51 @@ class Scan2ExcelService:
     def _fix_page_rotation(self, img, on_step: Optional[StepCallback]):
         """探测整页是否横放/倒放（90/180/270 度），需要时转正。
 
-        两个信号（缩小图探测，正立则零开销返回）：
-        - 文字框形状：正立文档以"宽>高"框为主，横放（90/270）时相反；
-        - 关闭 cls 方向分类后的识别分：180 度倒立文字分数明显下降
-          （cls 能逐行纠正朝向，开着它倒立页分数看不出异常）。
+        两个信号（缩小图探测）：
+        - 文字框形状：90/270 横放时文字框普遍"高瘦"（tall_ratio>0.5），
+          只有这种情况才需要全方向比较（90 与 270 无法从形状分辨）；
+        - 关闭 cls 方向分类后的识别分相对比较：180 倒置不改变文字框
+          形状，且干净大字倒置也能 rec 出绝对高分（实测 mean≈0.75 仍
+          通过绝对门槛）——绝对分不可信，只信"正立显著优于倒置"
+          （≥1.35 倍）的相对比较，因此正立/倒置页固定补测一个 180°。
         """
         try:
             q0 = self._probe_quality(img)
         except Exception:
             return img
-        if q0["ok"]:
-            return img
-        self._step(on_step, "检查页面方向 ...")
-        best_q, best_img = q0["q"], img
-        for k in (1, 2, 3):
-            self._check_cancel(None)
-            rotated = np.rot90(img, k)
+        best_k, best_q = 0, q0["q"]
+        if q0["tall_ratio"] > 0.5:
+            # 横放（90/270）：全方向比较
+            for k in (1, 2, 3):
+                self._check_cancel(None)
+                try:
+                    qk = self._probe_quality(np.rot90(img, k))
+                except Exception:
+                    continue
+                if qk["q"] > best_q:
+                    best_k, best_q = k, qk["q"]
+        else:
+            # 正立或倒置：只补测 180°（省 2 次探测，相对比较兜住倒置）
             try:
-                qk = self._probe_quality(rotated)
+                q2 = self._probe_quality(np.rot90(img, 2))
             except Exception:
-                continue
-            if qk["q"] > best_q * 1.15:
-                best_q, best_img = qk["q"], rotated
-        if best_img is not img:
-            self._step(on_step, "已自动转正页面方向")
-            return best_img
+                q2 = None
+            if q2 and q2["q"] > best_q:
+                best_k, best_q = 2, q2["q"]
+        if best_k != 0 and best_q >= max(12.0, q0["q"] * 1.35):
+            self._step(on_step, f"已自动转正页面方向（旋转 {best_k * 90}°）")
+            return np.rot90(img, best_k)
         return img
 
     def _probe_quality(self, img) -> Dict:
-        """小图探测，返回 q（综合质量分）与 ok（是否可直接判为正立）。"""
+        """小图探测，返回 q（综合质量分）与 tall_ratio（高瘦文字框占比）。"""
         h, w = img.shape[:2]
-        scale = 700.0 / max(h, w)
+        scale = 600.0 / max(h, w)
         small = cv2.resize(img, (int(w * scale), int(h * scale)),
                            interpolation=cv2.INTER_AREA) if scale < 1.0 else img
         items = self._engine().recognize_full(small, use_cls=False)
         if not items:
-            return {"q": 0.0, "ok": False}
+            return {"q": 0.0, "tall_ratio": 0.0}
         chars = sum(len(str(t)) for _, t, _ in items)
         scores = [float(s) for _, _, s in items]
         mean_score = sum(scores) / len(scores)
@@ -255,8 +276,7 @@ class Scan2ExcelService:
                    > 1.2 * (max(p[0] for p in box) - min(p[0] for p in box)))
         tall_ratio = tall / len(items)
         q = chars * mean_score * (0.5 if tall_ratio > 0.5 else 1.0)
-        ok = chars >= 8 and mean_score >= 0.75 and tall_ratio <= 0.5
-        return {"q": q, "ok": ok}
+        return {"q": q, "tall_ratio": tall_ratio}
 
     # ------------------------------------------------------------------ #
     # 无框线表格（SLANet-Plus 结构识别）
@@ -521,6 +541,16 @@ class Scan2ExcelService:
                 warns, mismatch = apply_xlsx_template(
                     page, structure, tpl_page, self._engine(),
                     doc_name=doc.name, cells=cells, fill_mode=fill_mode)
+                # 模板路径同样识别表格上方标题（此前被跳过，界面"表格标题"
+                # 一直为空；标题也可用于按标题命名导出）
+                self._recognize_title(page, structure, on_step)
+                # 立即求值勾稽（条件格式规则）——识别完就能看到不平的行，
+                # 不必等到导出；结果存 page.checks 供界面与导出共用，
+                # page.check_rows 供界面把整行标红
+                checks, check_rows = self._run_check_formulas(doc, page)
+                page.checks = checks
+                page.check_rows = check_rows
+                page.header_rows = max(1, int(getattr(tpl_page, "header_rows", 1) or 1))
                 page.template_file = str(doc.path)
                 page.template_page = tpl_page.page_name
                 # 手搓模板（无几何信息）：首次成功套用后回写几何比例，
@@ -541,15 +571,18 @@ class Scan2ExcelService:
                 base = [w for w in warns if w]
                 if note:      # 指定页低命中率等告警
                     base.append(note)
-                extra = self._run_check_formulas(doc, page)
-                if extra:
-                    base.extend(extra)
+                if checks:
+                    base.extend(checks)
                 if base:
-                    page.warning = "；".join(base[:6])
-                    self._step(on_step, "校验提示：" + page.warning)
+                    # 多条提示一行一条（界面 pre-line 展示，长列举不再糊成一行）
+                    page.warning = "\n".join(base[:8])
+                    self._step(on_step, "校验提示：" + page.warning.replace("\n", " ⏎ "))
                 return True
             if note:
                 self._step(on_step, f"xlsx 模板未匹配（{note}）")
+                # 原因挂到警告：图片列表的 ⚠ 直接可见（尺寸不符/命中率不足），
+                # 免得"未匹配模板"三个字让人猜是哪里不对
+                page.warning = f"未匹配模板：{note}"
 
         # ---- 旧版 JSON 模板（沿用比例几何方案）----
         from .template_mode import apply_template, match_template
@@ -577,11 +610,10 @@ class Scan2ExcelService:
         return True
 
     @staticmethod
-    def _run_check_formulas(doc, page) -> List[str]:
-        """把当前页填充值写入模板副本并求值"校验"表公式（勾稽关系）。
+    def _run_check_formulas(doc, page):
+        """把当前页填充值写入模板副本并求值条件格式（勾稽关系）。
 
-        公式来自模板 xlsx 的校验表（用户自己写），本地轻量求值；
-        复杂公式跳过并提示在 Excel 中查看。
+        返回 (提示消息列表, 不平的页行号 0 基列表)——行号供界面整行标红。
         """
         try:
             import tempfile
@@ -589,40 +621,119 @@ class Scan2ExcelService:
             from .xlsx_template import evaluate_checks, fill_template_workbook
             tpl_path = Path(doc.path)
             if not tpl_path.is_file():
-                return []
+                return [], []
             page_name = getattr(page, "template_page", "") or                 (doc.pages[0].page_name if doc.pages else "")
             with tempfile.TemporaryDirectory() as td:
                 out = Path(td) / "filled.xlsx"
                 fill_template_workbook(tpl_path, {page_name: page}, out)
                 return evaluate_checks(tpl_path, out, sheets=[page_name])
         except Exception:
-            return []
+            return [], []
+
+    _TITLE_STOP = ("科目代码", "科目名称", "上期余额", "本期发生额", "本期余额",
+                   "借方", "贷方", "合计", "编制日期", "编制单位", "制表",
+                   "审核", "复核", "共", "第", "页", "单位")
+
+    @staticmethod
+    def _title_like(text: str) -> bool:
+        """剔除表头词/数字/标点后仍剩实质汉字才像标题。
+
+        透视裁剪会把表框外的真标题裁掉，候选区时常只剩"上期余额"这类
+        表头片段——宁要空标题也不要表头冒充。
+        """
+        t = str(text or "")
+        for w in Scan2ExcelService._TITLE_STOP:
+            t = t.replace(w, "")
+        t = re.sub(r"[\s0-9（）()：:．.、·—\-‐–]+", "", t)
+        return len(t) >= 2
+
+    def render_scan(self, path: str, mode: str = "enhanced",
+                    on_step: Optional[StepCallback] = None,
+                    cancel_event: Optional[threading.Event] = None) -> np.ndarray:
+        """拍照图 → 扫描件：整页方向转正（复用 OCR 探测）→ 透视拉平 → 增强。
+
+        与识别管线互相独立，不影响模板匹配结果。
+        """
+        self._step(on_step, f"读取图片：{os.path.basename(path)}")
+        img = imread_unicode(path)   # EXIF 方向已在此处理
+        if img is None:
+            raise ImageReadError(
+                f"无法读取图片（{os.path.splitext(path)[1]}）：解码失败")
+        self._step(on_step, "方向探测 / 转正 ...")
+        img = self._fix_page_rotation(img, on_step)
+        self._check_cancel(cancel_event)
+        self._step(on_step, "透视拉平 ...")
+        flat = flatten_page(img)
+        self._check_cancel(cancel_event)
+        self._step(on_step, f"扫描增强（{mode}）...")
+        return enhance_scan(flat, mode)
 
     def _recognize_title(self, page: TablePage, structure: TableStructure,
                          on_step: Optional[StepCallback]) -> None:
-        """识别表格上方的标题：在候选区域里取字号最大的一行文字。
+        """识别表格上方的标题：取"字号最大的像标题的文字"。
 
-        标题常比正文大且通常在表格正上方；区域内可能还有页眉/编号等
-        小字，按文本行高度取最大者最稳。多个候选区域都识别，择优。
+        首选透视前图上、沿 quad 上边缘向外切出的条带（透视拉正后 OCR）：
+        标题在表框之外，透视裁剪必然把它裁掉，A/B 候选区时常只剩表头
+        片段（A 捡到组表头、B 的横线检测在畸变图上漂到表格中部）；A/B
+        区只作补充（quad 缺失时的唯一来源）。表头词一律不参与评选。
         """
-        if not structure.title_zones or structure.pre_image is None:
-            return
         engine = self._engine()
-        best_text, best_height = "", 0.0
+        candidates: List[Tuple[float, str]] = []   # (文字框高度, 文本)
+
+        quad = getattr(structure, "quad", None)
+        pre = structure.pre_image
+        if quad is not None and pre is not None and len(quad) == 4:
+            try:
+                q = np.asarray(quad, dtype=np.float32)
+                top_edge = float(np.linalg.norm(q[1] - q[0]))
+                band = float(np.clip(top_edge * 0.12, 48.0, 320.0))
+                src = np.float32([q[0] - (0, band), q[1] - (0, band), q[1], q[0]])
+                w = max(int(top_edge), 40)
+                strip = cv2.warpPerspective(
+                    pre,
+                    cv2.getPerspectiveTransform(
+                        src, np.float32([[0, 0], [w, 0],
+                                         [w, int(band)], [0, int(band)]])),
+                    (w, int(band)))
+                for box, text, _s in engine.recognize_full(strip):
+                    text = str(text).strip()
+                    if not text:
+                        continue
+                    bh = max(p[1] for p in box) - min(p[1] for p in box)
+                    candidates.append((bh * 1.15, text))   # 条带内候选优先
+            except Exception:
+                pass    # 条带构建失败退回 A/B 区
+
+        det_items = list(structure.det_items or [])
         for tag, x, y, w, h in structure.title_zones:
-            source = structure.image if tag == "A" else structure.pre_image
-            crop = source[y:y + h, x:x + w]
+            src = structure.image if tag == "A" else structure.pre_image
+            if src is None:
+                continue
+            if tag == "A" and det_items:
+                # A 区复用整表 det 结果按中心点落区，省一次 OCR
+                for box, text, _s in det_items:
+                    cx = sum(p[0] for p in box) / len(box)
+                    cy = sum(p[1] for p in box) / len(box)
+                    if x <= cx < x + w and y <= cy < y + h:
+                        bh = max(p[1] for p in box) - min(p[1] for p in box)
+                        candidates.append((bh, str(text).strip()))
+                continue
+            crop = src[y:y + h, x:x + w]
             if crop.size == 0:
                 continue
-            for box, text, score in engine.recognize_full(crop):
-                text = str(text).strip()
-                if not text:
-                    continue
-                box_h = max(p[1] for p in box) - min(p[1] for p in box)
-                if box_h > best_height:
-                    best_text, best_height = text, box_h
-        if best_text:
-            page.title = normalize_text(best_text)
+            for box, text, _s in engine.recognize_full(crop):
+                bh = max(p[1] for p in box) - min(p[1] for p in box)
+                candidates.append((bh, str(text).strip()))
+
+        best, best_h = "", 0.0
+        for bh, text in candidates:
+            text = text.strip()
+            if not text or not self._title_like(text):
+                continue
+            if bh > best_h:
+                best, best_h = text, bh
+        if best:
+            page.title = normalize_text(best)
 
     @staticmethod
     def _check_cancel(cancel_event: Optional[threading.Event]) -> None:
@@ -669,8 +780,12 @@ class Scan2ExcelService:
         # 拍照件的阴影格可能整批被判"非空"导致补漏风暴（每格一次 det+rec，
         # 数十秒），仅当格内 OCR 前景确实可见时才有价值——用归一化背景的
         # 文字密度把关：密度极低的阴影/噪点格直接视为空白跳过。
+        # 巨格（>图宽/高 60%）是竖/横线漏检的病态切分产物（如整行数字
+        # 粘成一格），逐格识别又慢又无意义，直接跳过。
+        h_img, w_img = structure.image.shape[:2]
         holes = [cell for cell in structure.cells
                  if not page.rows[cell.row][cell.col]
+                 and cell.w <= w_img * 0.6 and cell.h <= h_img * 0.6
                  and not _cell_in_regions(cell, regions, structure.image.shape)]
         done = 0
         for cell in holes:

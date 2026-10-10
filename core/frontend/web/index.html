@@ -164,8 +164,80 @@ header .spacer{flex:1;}
 .tab-btn:hover{color:var(--text);}
 .tab-btn.active{color:var(--accent); font-weight:600; border-bottom-color:var(--accent);}
 .tab-btn:focus-visible{outline:2px solid var(--accent-ring); outline-offset:-2px;}
+/* ---------- OCR 分裂按钮（主区 + 下拉箭头） ---------- */
+.ocr-split{display:inline-flex; align-items:stretch; align-self:stretch;
+  border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:transparent; position:relative;
+  transition:background .15s, border-color .15s;}
+.ocr-split:hover{border-color:var(--border-strong);}
+.ocr-split.active{background:var(--accent-soft); border-color:var(--accent-border);}
+.ocr-split-main{border:none; background:transparent; color:var(--text-2);
+  padding:0 13px; font:inherit; font-size:13.5px; cursor:pointer; white-space:nowrap;
+  border-radius:var(--radius-sm) 0 0 var(--radius-sm);
+  transition:color .15s;}
+.ocr-split.active .ocr-split-main{color:var(--accent); font-weight:600;}
+.ocr-split-main:hover{color:var(--accent-hover);}
+.ocr-split.active .ocr-split-main:hover{color:var(--accent-hover);}
+.ocr-split-arrow{border:none; background:transparent; color:var(--text-3);
+  padding:0 9px; font-size:11px; cursor:pointer;
+  border-left:1px solid var(--border);
+  border-radius:0 var(--radius-sm) var(--radius-sm) 0;
+  transition:color .15s, background .15s;}
+.ocr-split.active .ocr-split-arrow{color:var(--accent); border-left-color:var(--accent-border);}
+.ocr-split-arrow:hover{background:var(--accent-soft-hover); color:var(--accent);}
+.ocr-split .menu-list{left:0; right:auto; top:calc(100% + 6px); min-width:172px;}
+.ocr-split .menu-list button{display:flex; justify-content:space-between; align-items:center; gap:10px;}
+.ocr-split .menu-list button.ocr-cur{color:var(--accent); font-weight:600;}
+.ocr-split .menu-list .ocr-check{font-weight:700;}
 .page{flex:1; min-height:0; display:none; flex-direction:column;}
 .page.active{display:flex;}
+/* ---------- 汇总检查页 ---------- */
+#page-summary{gap:12px; padding:14px 16px; overflow:auto;}
+.sum-stats{display:flex; gap:22px; flex-wrap:wrap; font-size:13px; color:var(--text-2);
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:10px 16px; box-shadow:var(--shadow-card);}
+.sum-stats b{font-size:16px; color:var(--text); margin-left:4px;}
+.sum-stats .stat-bad, .sum-stats .stat-bad b{color:var(--danger);}
+.sum-scroll{flex:1; min-height:0; background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius); box-shadow:var(--shadow-card); overflow:auto;}
+#sumTable{min-width:820px;}
+.sum-ok{color:var(--accent); font-weight:600;}
+.sum-badtxt{color:var(--danger); font-weight:600;}
+.sum-dim{color:var(--text-3);}
+.sum-detail{font-size:11.8px; color:var(--text-3); white-space:normal; max-width:420px;
+  overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;}
+/* ---------- 数据处理页 ---------- */
+.dp-body{flex:1; min-height:0; display:flex; flex-direction:column; gap:12px;
+  padding:0 16px 14px; overflow:auto;}
+.dp-body .gen-row-desc{word-break:break-all;}
+.plink{color:var(--accent);text-decoration:underline;cursor:pointer;}
+.plink:hover{color:var(--accent-hover);}
+
+/* ---------- 扫描件页 ---------- */
+.scan-body{flex:1; min-height:0; display:flex; gap:12px;}
+.scan-film{flex:none; width:196px; min-height:0; overflow-y:auto;
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  box-shadow:var(--shadow-card);}
+.scan-film .side-head{padding:8px 12px;}
+.scan-item{position:relative; margin:8px 10px; border:2px solid var(--border); border-radius:8px;
+  overflow:hidden; cursor:pointer; background:var(--img-bg);}
+.scan-item img{display:block; width:100%; height:auto;}
+.scan-item.active{border-color:var(--accent); box-shadow:0 0 0 2px var(--accent-glow);}
+.scan-item .scan-no{position:absolute; top:4px; left:4px; background:var(--surface);
+  border:1px solid var(--border-strong); border-radius:6px; font-size:11px; padding:1px 6px; color:var(--text-2);}
+.scan-item .scan-del{
+  position:absolute; top:4px; right:4px; width:20px; height:20px; line-height:1;
+  border:1px solid var(--border-strong); border-radius:6px; background:var(--surface);
+  color:var(--text-2); font-size:13px; padding:0; cursor:pointer; opacity:0; transition:opacity .15s;}
+.scan-item:hover .scan-del{opacity:1;}
+.scan-item .scan-del:hover{background:var(--danger); border-color:var(--danger); color:#fff;}
+.scan-view{flex:1; min-width:0; min-height:0; display:flex; align-items:flex-start; justify-content:center;
+  overflow:auto; background:var(--img-bg); border:1px solid var(--border); border-radius:var(--radius);
+  box-shadow:var(--shadow-card); padding:16px;}
+#scanPreview{max-width:100%;}
+#scanPreview img{max-width:100%; max-height:calc(100vh - 210px); box-shadow:var(--shadow-pop);
+  background:var(--surface);}
+#scanPreview .ph{color:var(--text-3); font-size:12.5px;}
 /* OCR 页页内操作条 */
 .page-actions{flex:none; display:flex; gap:8px; align-items:center; padding:9px 16px; background:var(--surface); border-bottom:1px solid var(--border);}
 
@@ -234,20 +306,15 @@ aside{
 }
 .img-item:hover{background:var(--bg);}
 .img-item.active{background:var(--accent-soft);}
-.img-item .thumb{
-  position:relative; flex:none; width:46px; height:46px; border-radius:8px;
-  overflow:hidden; background:var(--surface-2); border:1px solid var(--border);
-}
-.img-item .thumb img{width:100%; height:100%; object-fit:cover; display:block;}
-.img-item .thumb .no{
-  position:absolute; left:3px; top:3px; width:16px; height:16px;
-  border-radius:50%; font-size:10px; font-weight:600;
-  display:flex; align-items:center; justify-content:center;
+.img-item .no{
+  flex:none; display:inline-flex; align-items:center; justify-content:center;
+  min-width:17px; height:17px; padding:0 4px; margin-right:5px;
+  border-radius:6px; font-size:10px; font-weight:600;
   background:var(--border-strong); color:var(--text);
 }
-.img-item.done .thumb .no{background:var(--accent); color:var(--on-accent);}
-.img-item.fail .thumb .no{background:var(--danger); color:var(--on-accent);}
-.img-item.run  .thumb .no{background:var(--accent-hover); color:var(--on-accent);}
+.img-item.done .no{background:var(--accent); color:var(--on-accent);}
+.img-item.fail .no{background:var(--danger); color:var(--on-accent);}
+.img-item.run  .no{background:var(--accent-hover); color:var(--on-accent);}
 .img-item .meta{flex:1; min-width:0;}
 .img-item .nm{font-size:12.8px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .img-item.active .nm{color:var(--accent); font-weight:600;}
@@ -289,8 +356,25 @@ body.dark .gen-card{box-shadow:none;}
 .gen-select:hover{border-color:var(--accent);}
 .gen-select:focus-visible{outline:2px solid var(--accent-ring); outline-offset:-2px;}
 
-/* ---------- 右侧工作区 ---------- */
-#right{display:flex; flex-direction:column; gap:12px; padding:14px 16px; min-width:0; min-height:0; overflow:auto;}
+/* ---------- 右侧工作区（主列 + 信息栏，“二丨”格局） ---------- */
+#right{display:flex; flex-direction:row; gap:12px; padding:14px 16px; min-width:0; min-height:0; overflow:hidden;}
+#mainCol{flex:1; min-width:0; min-height:0; display:flex; flex-direction:column; gap:12px;}
+/* 原图预览默认收起：只看结果；「查看原图」展开，× 收起 */
+#mainCol.no-preview #previewPane,
+#mainCol.no-preview #vSplit{display:none;}
+#sumDetail{
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  box-shadow:var(--shadow-card); padding:12px 14px; line-height:1.8;
+}
+.ip-title{font-size:11.8px; font-weight:700; color:var(--text-2); letter-spacing:.4px;
+  border-bottom:1px solid var(--border); padding-bottom:7px;}
+.ip-sec{font-size:12.4px; line-height:1.8; color:var(--text); white-space:pre-line; word-break:break-all;}
+.ip-sec b{color:var(--text-2); font-weight:600;}
+.ip-warn{font-size:12.4px; line-height:1.75; white-space:pre-line; word-break:break-all;
+  color:var(--warn-strong); background:var(--warn-soft);
+  border:1px solid var(--warn-strong); border-radius:8px; padding:8px 10px;}
+.ip-warn .ip-warn-title{font-weight:700;}
+.ip-empty{color:var(--text-3); font-size:12.3px;}
 #previewPane{
   flex:none; height:42%; min-height:170px; display:flex; flex-direction:column;
   background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
@@ -381,6 +465,9 @@ table.grid tr.head td{
   background:var(--surface-2); color:var(--text-2); font-weight:600; font-size:11.8px;
   position:sticky; top:0; z-index:2;
 }
+/* 多行表头逐行吸附：第 2 行起向下偏移（行高 27px，贴合表格实际行高） */
+table.grid tr.head.h1 td{top:27px; z-index:2;}
+table.grid tr.head.h2 td{top:54px; z-index:2;}
 table.grid td[contenteditable]:focus{
   outline:2px solid var(--accent); outline-offset:-2px; background:var(--surface);
   white-space:normal;
@@ -389,6 +476,10 @@ table.grid td.edited{background:var(--warn-soft);}
 table.grid td.lowconf{background:var(--danger-soft); color:var(--danger);}
 table.grid td.typewarn{background:var(--warn-soft); color:var(--warn-strong);}
 table.grid td.lowconf.typewarn{background:var(--danger-soft);}
+/* 勾稽不平整行标红（条件格式求值结果，与导出 Excel 的标红一致） */
+table.grid tr.check-bad td{background:var(--danger-soft);}
+table.grid tr.check-bad td:first-child{box-shadow:inset 3px 0 0 var(--danger);}
+body.dark table.grid tr.check-bad td{background:rgba(220,80,80,.16);}
 #tableEmpty{padding:26px; color:var(--text-3); text-align:center;}
 
 /* ---------- 导出下拉（reset-menu 同款） ---------- */
@@ -466,8 +557,16 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
   <span class="title">OCR工具</span>
   <span class="badge" id="badge">就绪</span>
   <nav class="nav-tabs">
-    <button type="button" class="tab-btn active" data-page="ocr" title="拍照/扫描表格与文字识别">OCR识别</button>
-    <button type="button" class="tab-btn" data-page="templates" title="模板库：查看表结构与命名区域，可打开 xlsx 编辑">模板库</button>
+    <div class="menu ocr-split active" id="ocrSplit" data-page="ocr">
+      <button type="button" class="ocr-split-main" id="ocrSplitMain" data-page="ocr" title="拍照/扫描表格与文字识别">OCR 识别</button><button type="button" class="ocr-split-arrow" title="切换 OCR 相关页面">▾</button>
+      <div class="menu-list" id="ocrSplitList">
+        <button type="button" data-page="ocr">OCR 识别</button>
+        <button type="button" data-page="summary" title="每张表的勾稽结论与识别信息一览">OCR 识别结果</button>
+        <button type="button" data-page="templates" title="查看表结构与命名区域">OCR 模板库</button>
+      </div>
+    </div>
+    <button type="button" class="tab-btn" data-page="scan" title="拍照图片 → 扫描件：自动转正、透视拉平、去阴影增白；彩色增强/黑白/灰度，可导出 JPG/PDF">扫描王</button>
+    <button type="button" class="tab-btn" data-page="dp" title="数据处理：把 OCR 导出结果汇总成长表 / 按国库模板直填">数据处理</button>
     <button type="button" class="tab-btn" data-page="settings" title="外观与识别引擎设置">设置</button>
   </nav>
   <span class="spacer"></span>
@@ -475,14 +574,17 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
 <main id="page-ocr" class="page active">
   <div class="page-actions">
     <button id="btnChoose" class="btn">选择文件</button>
-    <button id="btnStart" class="btn primary" disabled>识别表格</button>
-    <button id="btnText" class="btn" disabled title="把当前页强制按整页文字识别（表格页也能提纯文字）">识别文字</button>
+    <button id="btnClearAll" class="btn" title="清空全部照片和识别结果">清空</button>
+    <button id="btnStart" class="btn primary" disabled>批量识别表格</button>
+    <button id="btnText" class="btn" disabled title="把列表里全部照片按整页文字识别（表格页也能提纯文字）">批量识别文字</button>
+    <button id="btnTogglePreview" class="btn" title="展开/收起原图与识别叠加区域（平时只看结果即可）">查看原图</button>
     <button id="btnCancel" class="btn" disabled>取消</button>
     <span class="spacer"></span>
     <span class="menu" id="menuExport">
       <button id="btnExport" class="btn" disabled>导出 ▾</button>
       <div class="menu-list">
-        <button id="btnExcel">Excel 工作簿（全部页）</button>
+        <button id="btnExcel">Excel（sheet 名=文件名）</button>
+        <button id="btnExcelTitle">Excel（sheet 名=表标题）</button>
         <button id="btnWord">Word 文档（全部页）</button>
         <div class="sep"></div>
         <button data-fmt="csv">CSV（当前页）</button>
@@ -498,6 +600,7 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
     <div id="imgList"></div>
   </aside>
   <div id="right">
+   <div id="mainCol">
     <div id="previewPane">
       <div id="previewBar">
         <div class="seg">
@@ -506,7 +609,6 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
         </div>
         <button id="btnIgnore" class="btn tiny" title="在预览图上拖拽框选不需要识别的区域（页眉/水印/印章），重新识别后生效">框选忽略区域</button>
         <button id="btnIgClear" class="btn tiny" disabled>清空忽略区</button>
-        <button id="btnReprocess" class="btn tiny" disabled title="按当前设置（模板/忽略区域/精度档）重新识别这一页">重新识别</button>
         <span class="hint" id="previewHint">叠加图可用于确认表格切分是否正确</span>
       </div>
       <div id="previewBox"><div id="previewMedia"><span class="ph">选择照片后此处显示预览</span></div><div id="regLayer"></div><div id="linkLayer"></div><div id="drawRect"></div></div>
@@ -515,14 +617,66 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
     <div id="tablePane">
       <div id="titleBar"><span class="tlabel">表格标题</span><span id="titleText" contenteditable="true" spellcheck="false"></span></div>
       <div id="tableBar">
-        <span id="tableInfo">识别结果（可直接点击单元格修改）</span>
-        <span class="warn-legend"><button id="btnCopy" class="btn tiny" disabled>复制</button></span>
+        <span id="tableInfo">识别结果（可直接点击单元格修改）</span>        <span class="warn-legend"><button id="btnCopy" class="btn tiny" disabled>复制</button></span>
       </div>
       <div id="tableWrap"><div id="tableEmpty">尚无识别结果</div></div>
     </div>
   </div>
-  </div>
 </main>
+<section id="page-scan" class="page">
+  <div class="page-actions">
+    <button id="btnScanChoose" class="btn">选择文件</button>
+    <button id="btnScanClear" class="btn" title="清空全部照片和扫描件">清空</button>
+    <span class="tlabel" style="font-size:12px;color:var(--text-2);font-weight:600">输出模式</span>
+    <div class="seg" id="scanModeSeg">
+      <button data-mode="enhanced" class="on" title="去阴影推白底、提对比、轻锐化，保留彩色">彩色增强</button>
+      <button data-mode="bw" title="纸面纯白、笔画纯黑（自适应二值化）">黑白</button>
+      <button data-mode="gray" title="去阴影后的灰度，对比拉伸">灰度</button>
+      <button data-mode="origin" title="只做方向转正和透视拉平，不增强">原图拉平</button>
+    </div>
+    <button id="btnScanRender" class="btn primary">生成扫描件</button>
+    <button id="btnScanJpg" class="btn" disabled title="逐张存 JPG，保存到照片旁的「扫描件_时间戳」文件夹">导出 JPG</button>
+    <button id="btnScanPdf" class="btn" disabled title="全部扫描件合并成一个 PDF">导出 PDF</button>
+    <span class="spacer"></span>
+    <span class="hint" id="scanHint"></span>
+  </div>
+  <div class="scan-body">
+    <aside class="scan-film">
+      <div class="side-head">照片</div>
+      <div id="scanList"></div>
+    </aside>
+    <div class="scan-view"><div id="scanPreview"><span class="ph">添加照片后点「生成扫描件」</span></div></div>
+  </div>
+</section>
+<section id="page-summary" class="page">
+  <div class="sum-stats" id="sumStats"></div>
+  <div class="sum-scroll">
+    <table class="grid" id="sumTable"></table>
+    <div id="sumEmpty" class="ip-empty" style="padding:18px">还没有可汇总的识别结果——先在「OCR识别」页识别。</div>
+  </div>
+  <div id="sumDetail" class="ip-sec" style="display:none"></div>
+</section>
+<section id="page-dp" class="page">
+  <div class="page-actions">
+    <button id="btnDpSource" class="btn">选择源文件</button>
+    <span class="spacer"></span>
+    <button id="btnDpRun" class="btn primary" disabled>宽表汇总</button>
+  </div>
+  <div class="dp-body">
+    <div class="gen-card" style="width:100%">
+      <div class="gen-card-title">文件</div>
+      <div class="gen-row"><div class="gen-row-name">源文件</div><div class="gen-row-desc" id="dpSource">—</div></div>
+      <div class="gen-row"><div class="gen-row-name">规则配置</div><div class="gen-row-desc" id="dpConfig">—</div></div>
+      <div class="gen-row"><div class="gen-row-name">输出目录</div><div class="gen-row-desc" id="dpExports">—</div></div>
+    </div>
+    <div class="gen-card" style="width:100%">
+      <div class="gen-card-title">说明</div>
+      <div class="gen-row"><div class="gen-row-name">宽表汇总</div><div class="gen-row-desc">按 config 规则把源文件所有 sheet 摊平成宽表（pytools 3.9.8 同款）：行=源数据行（行头取合并格锚点，中缝表头也各占一行），列=列头路径，直接可 SUMIFS 引用。</div></div>
+      <div class="gen-row"><div class="gen-row-name">汇总结果</div><div class="gen-row-desc" id="dpResult">—</div></div>
+      <div class="gen-row"><div class="gen-row-name">写入目标</div><div class="gen-row-desc" id="dpTarget">—</div></div>
+    </div>
+  </div>
+</section>
 <section id="page-settings" class="page">
   <div class="settings-wrap">
     <div class="settings-col">
@@ -567,6 +721,18 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
         </div>
         <div class="gen-row">
           <div class="gen-row-left">
+            <div class="gen-row-name">自动旋转纠正</div>
+            <div class="gen-row-desc">识别前自动纠正倒置/横放的照片。每张需多花数秒做方向探测；照片方向都已摆正时可关闭，明显提速。</div>
+          </div>
+          <div class="gen-row-right">
+            <select id="selAutoRot" class="gen-select">
+              <option value="on">开启</option>
+              <option value="off">关闭</option>
+            </select>
+          </div>
+        </div>
+        <div class="gen-row">
+          <div class="gen-row-left">
             <div class="gen-row-name">离线说明</div>
             <div class="gen-row-desc">识别、表格结构、PDF 渲染、导出全部在本地完成，不访问网络。</div>
           </div>
@@ -576,8 +742,8 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
         <div class="gen-card-title">月计表模板</div>
         <div class="gen-row">
           <div class="gen-row-left">
-            <div class="gen-row-name">自动套用模板</div>
-            <div class="gen-row-desc">识别到与模板同格式的页面时，自动按模板冻结行列与科目文本，只 OCR 数值格（最准、最快）。模板来源：导出 Excel 时直接存到模板目录（或手工放入 xlsx），在「模板库」重新扫描即可。</div>
+            <div class="gen-row-name">自动匹配模板</div>
+            <div class="gen-row-desc">识别时按结构区文本自动匹配模板 sheet。关闭后仅用每张图行内选择的 sheet（未选则不套模板）——预先把各图 sheet 手动选好可省去匹配开销。套用模板的页面按模板冻结行列与科目文本，只 OCR 数值格（最准、最快）。</div>
           </div>
           <div class="gen-row-right">
             <select id="selTplAuto" class="gen-select">
@@ -693,20 +859,55 @@ function applyAccent(name){
   try{ localStorage.setItem('uiAccent', String(name||'默认蓝')); }catch(e){}
 }
 /* ================= 侧边导航页切换 ================= */
+var OCR_PAGES = {ocr: "OCR 识别", summary: "OCR 识别结果", templates: "OCR 模板库"};
+function switchPage(name){
+  Array.prototype.forEach.call(document.querySelectorAll(".page"), function(pg){
+    pg.classList.toggle("active", pg.id === "page-" + name);
+  });
+  if(name === "templates") openTemplateLib();
+  if(name === "summary") fetchSummary();
+  if(name === "scan") renderScanPage();
+  if(name === "dp") renderDp();
+  syncNav(name);
+}
+function syncNav(name){
+  Array.prototype.forEach.call(document.querySelectorAll(".tab-btn"), function(b){
+    b.classList.toggle("active", b.dataset.page === name);
+  });
+  var split = $("ocrSplit");
+  if(!split) return;
+  var isOcr = OCR_PAGES.hasOwnProperty(name);
+  split.classList.toggle("active", isOcr);
+  if(isOcr){
+    split.dataset.page = name;
+    $("ocrSplitMain").textContent = OCR_PAGES[name];
+  }
+  Array.prototype.forEach.call(
+    document.querySelectorAll("#ocrSplitList button"), function(b){
+      var on = b.dataset.page === name;
+      b.classList.toggle("ocr-cur", on);
+      b.innerHTML = esc(OCR_PAGES[b.dataset.page])
+        + (on ? ' <span class="ocr-check">✓</span>' : "");
+    });
+}
 (function initTabs(){
-  var items = document.querySelectorAll(".tab-btn");
-  Array.prototype.forEach.call(items, function(b){
-    b.addEventListener("click", function(){
-      Array.prototype.forEach.call(items, function(x){
-        x.classList.toggle("active", x === b);
-      });
-      var name = b.dataset.page;
-      Array.prototype.forEach.call(document.querySelectorAll(".page"), function(pg){
-        pg.classList.toggle("active", pg.id === "page-" + name);
-      });
-      if(name === "templates") openTemplateLib();
+  Array.prototype.forEach.call(document.querySelectorAll(".tab-btn"), function(b){
+    b.addEventListener("click", function(){ switchPage(b.dataset.page); });
+  });
+  // OCR 分裂按钮：主区点击切到按钮文字对应的页面
+  $("ocrSplitMain").addEventListener("click", function(){
+    switchPage($("ocrSplit").dataset.page || "ocr");
+  });
+  // 下拉选项：切换 + 同步主区文字 + 收起菜单
+  Array.prototype.forEach.call(
+    document.querySelectorAll("#ocrSplitList button"), function(b){
+    b.addEventListener("click", function(ev){
+      ev.stopPropagation();
+      closeMenus();
+      switchPage(b.dataset.page);
     });
   });
+  syncNav("ocr");
 })();
 
 (function initAppearance(){
@@ -734,24 +935,26 @@ function applyAccent(name){
       toast(target ? '已切换到高精度档（更准，更慢）' : '已切换到标准档', 'ok');
     }).catch(function(e){ toast(e.message||String(e), 'err'); });
   });
+  var selRot = document.getElementById('selAutoRot');
+  if(selRot) selRot.addEventListener('change', function(){
+    var on = selRot.value === 'on';
+    api('set_auto_rotate', on).then(function(st){
+      S = st; render();
+      toast(on ? '自动旋转：开启' : '自动旋转：关闭（请确保照片方向已摆正）', 'ok');
+    }).catch(function(e){ toast(e.message||String(e), 'err'); });
+  });
+  var selTpl = document.getElementById('selTplAuto');
+  if(selTpl) selTpl.addEventListener('change', function(){
+    var on = selTpl.value === 'on';
+    api('set_template_auto', on).then(function(st){
+      S = st; render();
+      toast(on ? '自动匹配模板：开启' : '自动匹配模板：关闭（仅用每张图手动指定的 sheet）', 'ok');
+    }).catch(function(e){ toast(e.message||String(e), 'err'); });
+  });
 })();
 
 /* ================= 月计表模板（事件绑定延后到 S 就绪后由 initTemplateUI 调用） ================= */
-function initTemplateUI(){
-  $("selTplAuto").addEventListener("change", function(){
-    api("set_template_auto", $("selTplAuto").value === "on").then(function(st){
-      S = st; render();
-    });
-  });
-  // 重新识别当前页
-  $("btnReprocess").addEventListener("click", function(){
-    api("reprocess_page", S.current).then(function(ok){
-      if(!ok) toast("请先选择一张照片");
-      else toast("正在重新识别…");
-      poll();
-    }).catch(function(e){ toast(e.message||String(e), "err"); });
-  });
-}
+function initTemplateUI(){}
 
 /* ================= 模板库（查看 / 细调 / 删除） ================= */
 var tplLibCurrent = "";
@@ -929,8 +1132,6 @@ var S = null;                 // 最近一次 get_state
 var lastTableKey = "";        // 表格重建指纹
 var editedCells = {};         // {"r,c":true} 当前图用户改过的格子
 var previewKey = "";
-var thumbCache = {};          // path → 缩略图 dataURL（轮询重渲染不重复请求）
-var thumbPending = {};
 
 function $(id){ return document.getElementById(id); }
 function toast(msg, cls){
@@ -988,10 +1189,9 @@ function syncTemplatePanel(){
       ? "共 " + names.length + " 个模板：" + names.join(" · ")
       : "尚无模板。请前往顶部「模板库」页查看工作表清单；新增模板：导出 Excel 存到模板目录后点「重新扫描」。";
   }
-  if($("selTplAuto")) $("selTplAuto").value = (S.template_auto === false) ? "off" : "on";
 }
 
-/* 设置页：引擎档位下拉与状态同步 */
+/* 设置页：引擎档位/自动旋转/自动匹配模板 下拉与状态同步 */
 function syncEngineSetting(){
   var sel = $("selEngine");
   if(!sel) return;
@@ -999,6 +1199,12 @@ function syncEngineSetting(){
   if(document.activeElement !== sel) sel.value = v;
   $("engineStatus").textContent = S.busy
     ? "识别中…" : (S.high_accuracy ? "当前：高精度档" : "当前：标准档");
+  var rot = $("selAutoRot");
+  if(rot && document.activeElement !== rot)
+    rot.value = (S.auto_rotate === false) ? "off" : "on";
+  var tpl = $("selTplAuto");
+  if(tpl && document.activeElement !== tpl)
+    tpl.value = (S.template_auto === false) ? "off" : "on";
 }
 
 function renderBadge(){
@@ -1018,7 +1224,9 @@ function imgTplSelectHtml(i, im){
   var names = (S.templates || []);
   var cur = (im.template_name || "") + (im.template_page ? "::" + im.template_page : "");
   var h = '<select data-img-tpl="' + i + '"' + (cur ? ' class="on"' : '') + '>';
-  h += '<option value=""' + (cur === "" ? " selected" : "") + '>自动匹配模板</option>';
+  // 自动匹配关闭时，空选项等同不套模板，标签如实相告
+  h += '<option value=""' + (cur === "" ? " selected" : "") + '>'
+    + (S.template_auto === false ? "不使用（自动匹配已关）" : "自动匹配模板") + '</option>';
   h += '<option value="__none__"' + (cur === "__none__" ? " selected" : "") + '>不使用模板</option>';
   // 直接列出各模板的 sheet 作为选项（sheet 名自带表名前缀，如 会计月计表第一页）
   names.forEach(function(doc){
@@ -1042,8 +1250,22 @@ function imgTplSelectHtml(i, im){
   return h;
 }
 
+
+var lastListKey = "";
 function renderList(){
   var box = $("imgList");
+  // 列表指纹：内容未变则直接返回，避免 800ms 轮询把下拉框等交互元素整体
+  // 重建（表现为"下拉框一展开/一动就没了"）
+  var key = S.images.map(function(im){
+    return im.path + '|' + im.status + '|' + im.template_name + '|'
+      + im.template_page + '|' + im.n_rows + '|' + im.n_cols
+      + '|' + (im.warning||'') + '|' + (im.fill_mode||'');
+  }).join('§') + '#' + S.current + '#' + S.images.length
+    + '#' + (S.template_auto === false ? 't0' : 't1');
+  if(key === lastListKey){
+    return;
+  }
+  lastListKey = key;
   if(!S.images.length){
     box.innerHTML = '<div class="side-empty">还没有照片<br>点击右上「选择照片/PDF…」<br>或直接拖入窗口</div>';
     return;
@@ -1055,43 +1277,35 @@ function renderList(){
       cls="done";
       sub = (im.mode==="text" ? "文字 "+im.n_rows+" 行" : im.n_rows+"行x"+im.n_cols+"列") + " · "+im.elapsed+"s";
       if(im.borderless) sub += " · 无框线";
-      if(im.template) sub = "★" + im.template + " · " + sub;
-      if(im.warning) sub += " · ⚠";
+      // 明确标注是否用了模板（用了哪个 / 未匹配 / 未使用）
+      var tlist = S.templates || [];
+      if(im.template){
+        sub = "✓模板:" + im.template + " · " + sub;
+        if(im.warning) sub += " · ⚠";
+      } else if(tlist.length){
+        var binding = (im.template_name || "");
+        // 自动匹配已关且未手动指定 = 主动不用模板，不是"未匹配"
+        var unused = binding === "__none__"
+          || (S.template_auto === false && !binding);
+        sub = (unused ? "✗未用模板 · " : "⚠未匹配模板 · ") + sub;
+        // 未匹配时给出原因（截第一行，悬停见全文）
+        if(!unused && im.warning)
+          sub += " · " + String(im.warning).split("\n")[0].slice(0, 30);
+      }
     }
     else if(im.status==="失败"){ cls="fail"; sub = im.error||"识别失败"; }
     else if(im.status==="识别中"){ cls="run"; sub = "识别中…"; }
     else sub = "等待识别";
     if(im.warped && sub) sub += " · 已校正";
-    var tpath = esc(im.path);
-    var thumb = thumbCache[im.path]
-      ? '<img alt="" src="'+thumbCache[im.path]+'">' : '';
     html += '<div class="img-item '+cls+(i===S.current?' active':'')+'" data-i="'+i+'">'
-      + '<span class="thumb" data-tpath="'+tpath+'">'+thumb
-      + '<span class="no">'+(i+1)+'</span></span>'
-      + '<div class="meta"><div class="nm" title="'+esc(im.name)+'">'+esc(im.name)+'</div>'
-      + '<div class="sub'+(im.status==='失败'?' fail':'')+'">'+esc(sub)+'</div>'
+      + '<div class="meta">'
+      + '<div class="nm"><span class="no">'+(i+1)+'</span>'+esc(im.name)+'</div>'
+      + '<div class="sub'+(im.status==='失败'?' fail':'')+'" title="'
+      + esc(im.warning || im.error || sub)+'">'+esc(sub)+'</div>'
       + '<div class="tpl-sel">' + imgTplSelectHtml(i, im) + '</div></div>'
       + '<button class="del" data-del="'+i+'" title="移除">×</button></div>';
   }
   box.innerHTML = html;
-  // 懒加载缺失的缩略图（拿到后写缓存并就地补 img，轮询不重复请求）
-  Array.prototype.forEach.call(box.querySelectorAll(".thumb[data-tpath]"), function(sp){
-    var p = sp.getAttribute("data-tpath");
-    if(thumbCache[p]) return;
-    if(thumbPending[p]) return;
-    thumbPending[p] = true;
-    var idx = parseInt(sp.closest(".img-item").getAttribute("data-i"), 10);
-    api("get_thumb", idx).then(function(durl){
-      if(!durl) return;
-      thumbCache[p] = durl;
-      Array.prototype.forEach.call(
-        document.querySelectorAll('.thumb[data-tpath]'), function(el){
-          if(el.getAttribute("data-tpath") === p && !el.querySelector("img")){
-            el.insertAdjacentHTML("afterbegin", '<img alt="" src="'+durl+'">');
-          }
-        });
-    }).catch(function(){ thumbPending[p] = false; });
-  });
   Array.prototype.forEach.call(box.querySelectorAll(".img-item"), function(el){
     el.addEventListener("click", function(ev){
       if(ev.target.closest && ev.target.closest("[data-del]")) return;
@@ -1134,7 +1348,6 @@ function renderButtons(){
   $("btnText").disabled = S.busy || !cur;
   var ir = cur ? (S.images[S.current].ignore_regions||[]).length : 0;
   $("btnIgClear").disabled = S.busy || !ir;
-  $("btnReprocess").disabled = S.busy || !cur;
   $("btnIgnore").disabled = S.busy || !cur;
   $("btnIgnore").className = "btn tiny" + (drawMode ? " toggle-on" : "");
 }
@@ -1151,8 +1364,323 @@ function renderLog(){
   if($("logPane").classList.contains("open")) body.scrollTop = body.scrollHeight;
 }
 
+/* ================= 原图预览折叠 ================= */
+function setPreviewShown(on){
+  var mc = $("mainCol");
+  if(mc) mc.classList.toggle("no-preview", !on);
+  try{ localStorage.setItem("uiShowPreview", on ? "1" : "0"); }catch(e){}
+  var b = $("btnTogglePreview");
+  if(b){
+    b.textContent = on ? "收起原图" : "查看原图";
+    b.classList.toggle("toggle-on", on);
+  }
+}
+(function initPreviewToggle(){
+  var saved = "0";
+  try{ saved = localStorage.getItem("uiShowPreview") || "0"; }catch(e){}
+  setPreviewShown(saved === "1");
+  $("btnTogglePreview").addEventListener("click", function(){
+    var mc = $("mainCol");
+    setPreviewShown(!!mc.classList.contains("no-preview"));
+  });
+})();
+
+/* ================= 扫描件页 ================= */
+var SCAN_CUR = -1, SCAN_LIST_KEY = "";
+function renderScanPage(){
+  var imgs = S.scan_images || [];
+  var busy = !!S.scan_busy;
+  $("btnScanRender").disabled = busy || !imgs.length;
+  $("btnScanJpg").disabled = busy || !(S.scan_done > 0);
+  $("btnScanPdf").disabled = busy || !(S.scan_done > 0);
+  $("scanHint").textContent = busy
+    ? ("生成中 " + (S.scan_done || 0) + "/" + imgs.length + " …")
+    : (imgs.length ? "模式：" + scanModeName(S.scan_mode) : "");
+  var key = imgs.map(function(im){ return im.path; }).join('§')
+    + '#' + (S.scan_done || 0);
+  if(key === SCAN_LIST_KEY) return;
+  SCAN_LIST_KEY = key;
+  if((SCAN_CUR < 0 || SCAN_CUR >= imgs.length) && imgs.length) SCAN_CUR = 0;
+  var html = "";
+  imgs.forEach(function(im, i){
+    html += '<div class="scan-item' + (i === SCAN_CUR ? ' active' : '') + '" data-si="' + i + '">'
+      + '<span class="scan-no">' + (i + 1) + '</span>'
+      + '<img alt="" data-sthumb="' + esc(im.path) + '">'
+      + '<button class="scan-del" data-sdel="' + i + '" title="移除">×</button>'
+      + '</div>';
+  });
+  $("scanList").innerHTML = html;
+  Array.prototype.forEach.call($("scanList").querySelectorAll(".scan-item"), function(el){
+    var i = +el.dataset.si;
+    var img = el.querySelector("img");
+    api("get_thumb", i, "scan").then(function(d){ if(d && img) img.src = d; }).catch(function(){});
+    el.addEventListener("click", function(ev){
+      if(ev.target.closest && ev.target.closest("[data-sdel]")) return;
+      SCAN_CUR = i;
+      Array.prototype.forEach.call($("scanList").querySelectorAll(".scan-item"), function(x){
+        x.classList.toggle("active", x === el);
+      });
+      renderScanPreview();
+    });
+  });
+  Array.prototype.forEach.call($("scanList").querySelectorAll("[data-sdel]"), function(btn){
+    btn.addEventListener("click", function(ev){
+      ev.stopPropagation();
+      var i = +btn.dataset.sdel;
+      api("remove_image", i, "scan").then(function(st){
+        S = st;
+        if(SCAN_CUR >= (S.scan_images || []).length) SCAN_CUR = (S.scan_images || []).length - 1;
+        SCAN_LIST_KEY = "";
+        renderScanPage();
+      }).catch(function(e){ toast(e.message || String(e), "err"); });
+    });
+  });
+  renderScanPreview();
+}
+function scanModeName(m){
+  return {enhanced: "彩色增强", bw: "黑白", gray: "灰度", origin: "原图拉平"}[m] || m;
+}
+function renderScanPreview(){
+  var box = $("scanPreview");
+  if(SCAN_CUR < 0){
+    box.innerHTML = '<span class="ph">添加照片后点「生成扫描件」</span>';
+    return;
+  }
+  box.innerHTML = '<span class="ph">加载中…</span>';
+  api("get_scan_preview", SCAN_CUR).then(function(d){
+    box.innerHTML = d ? '<img alt="" src="' + d + '">'
+      : '<span class="ph">该页尚未生成——点「生成扫描件」</span>';
+  }).catch(function(){
+    box.innerHTML = '<span class="ph">预览加载失败</span>';
+  });
+}
+(function initScanPage(){
+  $("btnScanChoose").addEventListener("click", function(){
+    api("choose_images", "scan").then(function(n){
+      if(n > 0) toast("已添加 " + n + " 张照片（扫描王）", "ok");
+      return api("get_state");
+    }).then(function(st){ S = st; renderScanPage(); })
+      .catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  $("btnScanClear").addEventListener("click", function(){
+    if(!S.images.length){ toast("列表本来就是空的"); return; }
+    if(!confirm("清空扫描王的照片和扫描件？此操作不可撤销。")) return;
+    api("clear_scans").then(function(st){
+      S = st; SCAN_CUR = -1; SCAN_LIST_KEY = "";
+      renderScanPage(); toast("已清空", "ok");
+    }).catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  Array.prototype.forEach.call(
+    document.querySelectorAll("#scanModeSeg button"), function(b){
+    b.addEventListener("click", function(){
+      Array.prototype.forEach.call(
+        document.querySelectorAll("#scanModeSeg button"), function(x){
+        x.classList.toggle("on", x === b);
+      });
+      api("set_scan_mode", b.dataset.mode).then(function(st){
+        S = st; renderScanPage();
+      }).catch(function(e){ toast(e.message || String(e), "err"); });
+    });
+  });
+  $("btnScanRender").addEventListener("click", function(){
+    api("render_scans").then(function(st){ S = st; renderScanPage(); })
+      .catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  $("btnScanJpg").addEventListener("click", function(){
+    api("export_scan_jpg").then(function(res){
+      toast("已导出 " + res.count + " 张 JPG：" + res.dir, "ok");
+    }).catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  $("btnScanPdf").addEventListener("click", function(){
+    api("export_scan_pdf").then(function(res){
+      if(res && res.canceled) return;
+      toast("已导出 PDF（" + res.count + " 页）：" + res.path, "ok");
+    }).catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+})();
+
+/* ================= 汇总检查页 ================= */
+var SUMMARY = null, SUMMARY_KEY = "";
+function fetchSummary(){
+  api("get_summary").then(function(res){
+    if(!res || !res.items) return;
+    var key = JSON.stringify(res.stats) + '#' + res.items.map(function(it){
+      return it.status + '|' + it.bad.length + '|' + (it.title || '') + '|'
+        + ((it.mismatch && it.mismatch.matched) || '');
+    }).join('§');
+    if(key === SUMMARY_KEY) return;
+    SUMMARY_KEY = key;
+    SUMMARY = res;
+    renderSummary();
+  }).catch(function(){});
+}
+function renderSummary(){
+  var st = SUMMARY.stats;
+  $("sumStats").innerHTML =
+    '<span>共 <b>' + st.total + '</b> 张</span>' +
+    '<span>已套模板 <b>' + st.templated + '</b> 张</span>' +
+    '<span class="' + (st.bad ? 'stat-bad' : '') + '">勾稽不平 <b>' + st.bad + '</b> 张</span>' +
+    '<span>平衡 <b>' + st.ok + '</b> 张</span>';
+  $("sumEmpty").style.display = st.total ? "none" : "";
+  var html = '<thead><tr class="head"><th>#</th><th>照片</th><th>标题 / 模板</th>'
+    + '<th>网格</th><th>勾稽（条件格式）</th><th>行对齐</th><th>耗时</th><th></th></tr></thead><tbody>';
+  SUMMARY.items.forEach(function(it){
+    var mm = it.mismatch || {};
+    var align = '—';
+    if(mm.matched != null){
+      align = mm.matched + ' 行匹配';
+      if(mm.unmatched && mm.unmatched.length) align += '，' + mm.unmatched.length + ' 未找到';
+      if(mm.extra && mm.extra.length) align += '，' + mm.extra.length + ' 多余';
+    }
+    var check;
+    if(it.status === "完成" && !it.template){
+      check = '<span class="sum-dim">未套模板</span>';
+    } else if(it.status !== "完成"){
+      check = '<span class="sum-dim">' + esc(it.status || "等待") + '</span>';
+    } else if(!it.bad.length){
+      check = '<span class="sum-ok">✓ 平衡</span>';
+    } else {
+      var detail = it.bad.map(function(b){
+        return '第' + b.row + '行 [' + esc((b.code + ' ' + b.name).trim()) + ']';
+      }).join('；');
+      check = '<span class="sum-badtxt">✗ ' + it.bad.length + ' 行不平</span>'
+        + '<div class="sum-detail">' + detail + '</div>';
+    }
+    html += '<tr data-sidx="' + it.index + '"' + (it.bad.length ? ' class="check-bad"' : '')
+      + (it.index === S.current ? ' style="outline:2px solid var(--accent);outline-offset:-2px;"' : '') + '>'
+      + '<td>' + (it.index + 1) + '</td>'
+      + '<td>' + esc(it.name) + '</td>'
+      + '<td>' + esc(it.title || it.template || '—') + '</td>'
+      + '<td>' + (it.n_rows ? it.n_rows + '×' + it.n_cols : '—') + '</td>'
+      + '<td>' + check + '</td>'
+      + '<td>' + esc(align) + '</td>'
+      + '<td>' + (it.elapsed ? it.elapsed + 's' : '—') + '</td>'
+      + '<td><button class="btn tiny" data-goto="' + it.index + '">查看</button></td>'
+      + '</tr>';
+  });
+  html += '</tbody>';
+  var box = $("sumTable");
+  box.innerHTML = html;
+  // 行点击：详情卡切到该表（识别信息 + 校验提示）
+  Array.prototype.forEach.call(box.querySelectorAll("tr[data-sidx]"), function(tr){
+    tr.addEventListener("click", function(){
+      api("set_current", +tr.dataset.sidx).then(function(st){
+        S = st; renderInfo();
+        Array.prototype.forEach.call(
+          box.querySelectorAll("tr[data-sidx]"), function(x){
+          x.style.outline = (x === tr && +x.dataset.sidx === S.current)
+            ? "2px solid var(--accent)" : "none";
+          if(x === tr) x.style.outlineOffset = "-2px";
+        });
+      }).catch(function(e){ toast(e.message || String(e), "err"); });
+    });
+  });
+  // 查看按钮：跳回 OCR 识别页就地校对
+  Array.prototype.forEach.call(box.querySelectorAll("button[data-goto]"), function(btn){
+    btn.addEventListener("click", function(ev){
+      ev.stopPropagation();
+      api("set_current", +btn.dataset.goto).then(function(st){
+        S = st;
+        var ocrTab = document.querySelector('.tab-btn[data-page="ocr"]');
+        if(ocrTab) ocrTab.click();
+      }).catch(function(e){ toast(e.message || String(e), "err"); });
+    });
+  });
+  renderInfo();
+}
+
+/* ================= 数据处理页 ================= */
+function plink(p){
+  var s = esc(p);
+  return '<span class="plink" data-path="' + s + '">' + s + '</span>';
+}
+function renderDp(){
+  var dp = S.dp || {};
+  var cfg = dp.config || "";
+  $("dpConfig").innerHTML = cfg ? plink(cfg) : "data/config/config.xlsx";
+  var ex = S.exports_dir || "";
+  var src = dp.source || "";
+  $("dpSource").innerHTML = src ? plink(src) : "未选择（点击「选择源文件」）";
+  $("dpExports").innerHTML = ex ? plink(ex) : "—";
+  $("btnDpRun").disabled = S.busy || !src;
+}
+(function initDp(){
+  [["btnDpSource", "source"]].forEach(function(pair){
+    $(pair[0]).addEventListener("click", function(){
+      api("dp_pick", pair[1]).then(function(st){ S = st; renderDp(); })
+        .catch(function(e){ toast(e.message || String(e), "err"); });
+    });
+  });
+  $("btnDpRun").addEventListener("click", function(){
+    toast("宽表汇总中…");
+    api("dp_run").then(function(res){
+      $("dpResult").innerHTML = res.rows + " 行 x " + res.cols + " 列 → " + plink(res.path);
+      $("dpTarget").innerHTML = (res.targets || []).map(function(x){
+        var p = plink(x.wb) + "::" + esc(x.sheet) + " ";
+        if(x.reason === "header_mismatch") return p + "表头不匹配，已跳过写入";
+        if(!x.written) return p + "无新增行";
+        return p + "新增 " + x.added + " 行（输入 " + x.input + "）";
+      }).join("<br>") || "未配置目标写入";
+      toast("宽表汇总完成：" + res.rows + " 行", "ok");
+    }).catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  /* 路径超链接：点击用系统程序打开（文件/文件夹） */
+  $("page-dp").addEventListener("click", function(ev){
+    var t = ev.target;
+    if(t && t.classList && t.classList.contains("plink") && t.dataset.path){
+      api("open_path", t.dataset.path)
+        .catch(function(e){ toast(e.message || String(e), "err"); });
+    }
+  });
+})();
+
 /* ================= 结果表（可编辑） ================= */
+function renderInfo(){
+  /* 识别信息详情卡：随当前照片更新，显示在「OCR识别结果」页底部 */
+  var box = $("sumDetail");
+  if(!box) return;
+  var im = (S.current >= 0 && S.images[S.current]) || null;
+  if(!im){
+    box.style.display = "none";
+    return;
+  }
+  var lines = [];
+  lines.push('<b>' + esc(im.name || ("第" + (S.current+1) + "张")) + '</b>（第 '
+    + (S.current+1) + '/' + S.images.length + ' 张）');
+  lines.push('状态：<b>' + esc(im.status || "等待") + '</b>'
+    + (im.status === "完成" && im.elapsed ? ' · ' + im.elapsed + 's' : ''));
+  var t = S.table;
+  if(t && t.rows && t.rows.length){
+    lines.push('网格：' + t.rows.length + ' 行 x ' + (t.rows[0] ? t.rows[0].length : 0) + ' 列');
+    if(t.title) lines.push('标题：' + esc(t.title));
+  }
+  if(im.template){
+    lines.push('模板：<b>' + esc(im.template) + '</b>');
+  } else if((S.templates || []).length){
+    lines.push('模板：未套用（走通用识别）');
+  }
+  var mm = im.row_mismatch;
+  if(mm && (mm.matched || (mm.unmatched && mm.unmatched.length) || (mm.extra && mm.extra.length))){
+    var seg = '行对齐：' + (mm.matched || 0) + ' 行匹配';
+    if(mm.unmatched && mm.unmatched.length) seg += '，' + mm.unmatched.length + ' 行未找到';
+    if(mm.extra && mm.extra.length) seg += '，' + mm.extra.length + ' 行多余';
+    lines.push(esc(seg));
+  }
+  if(t && t.check_rows && t.check_rows.length){
+    lines.push('勾稽：<b style="color:var(--danger)">' + t.check_rows.length + ' 行不平</b>（表中红行）');
+  }
+  var html = lines.join('\n');
+  var wtxt = String(im.warning || "");
+  if(wtxt && im.template_name !== "__none__"){
+    html += '\n<div class="ip-warn" style="margin-top:8px">'
+      + '<span class="ip-warn-title">⚠ 校验提示</span>\n' + esc(wtxt) + '</div>';
+  }
+  box.style.display = "";
+  box.innerHTML = html;
+}
+
 function renderTable(){
+  renderInfo();
   var wrap = $("tableWrap");
   var t = S.table;
   renderTitle(t);
@@ -1177,8 +1705,20 @@ function renderTable(){
   // 数字列推断：跳过表头行，某列 >=70% 非空值为数字 → 该列应为数字列
   var numericCols = detectNumericCols(t.rows, t.mode==="text" ? 0 : 1);
   var numWarnCount = 0;
+  var hdrRows = (t.mode==="text" || t.mode==="borderless") ? 0
+              : Math.max(1, Math.min(t.header_rows || 1, 3));
+  // 勾稽不平的行（后端条件格式求值）：整行标红，一眼看到不平处
+  var checkRows = (t.check_rows || []).filter(function(x){ return x >= 0; });
   for(var r=0; r<nR; r++){
-    html += "<tr" + (r===0 && t.mode!=="text" ? ' class="head"':"") + ">";
+    var headCls = (r < hdrRows) ? (' class="head h' + Math.min(r, 2) + '"') : "";
+    if(checkRows.indexOf(r) >= 0){
+      // 保留表头类（frozen 冻结样式）的同时叠加勾稽标红
+      headCls = headCls
+        ? ' class="head h' + Math.min(r, 2) + ' check-bad"'
+        : ' class="check-bad"';
+      headCls += ' title="勾稽不平（条件格式标红处，请核对）"';
+    }
+    html += "<tr" + headCls + ">";
     for(var c=0; c<nC; c++){
       if(used[r+","+c]) continue;
       var span = "", isMerged = false;
@@ -1192,7 +1732,7 @@ function renderTable(){
       var scKey = r+","+c;
       var sc = t.scores ? t.scores[scKey] : null;
       if(sc != null && sc < 0.85 && v){ cls2 = "lowconf"; tip = '置信度 '+sc; }
-      var isHeader = (r===0 && t.mode!=="text");
+      var isHeader = (r < hdrRows);
       if(!isHeader && !isMerged && v && numericCols[c] && !isNumLike(v)){
         cls2 = cls2 ? cls2+" typewarn" : "typewarn";
         tip = (tip ? tip + "；" : "") + "该列应为数字";
@@ -1226,12 +1766,17 @@ function renderTable(){
       applyLinkHighlight();
     });
   });
+  var imInfo = (S.current >= 0 && S.images[S.current]) || {};
+  var cfWarn = "";
+  if(t.check_rows && t.check_rows.length){
+    cfWarn = " · 勾稽不平 " + t.check_rows.length + " 行（红行）";
+  }
   $("tableInfo").textContent = (t.mode === "text"
       ? "文字识别结果：第 " + (S.current+1) + " 张 · " + nR + " 行（每行一条，可点击修改）"
       : "识别结果：第 " + (S.current+1) + " 张 · "
         + nR + " 行 x " + nC + " 列（黄底为你改过的格子 · 点击单元格即可修改）")
     + (numWarnCount ? " · 检测到 " + numWarnCount + " 处数字列异常（橙底，请核对）" : "")
-    + " · 红底=识别置信度低";
+    + " · 红底=识别置信度低" + cfWarn;
 }
 
 function isNumLike(v){
@@ -1406,6 +1951,8 @@ function renderRegions(){
 function poll(){
   api("get_state").then(function(st){
     S = st; render();
+    if($("page-summary").classList.contains("active")) fetchSummary();
+    if($("page-scan").classList.contains("active")) renderScanPage();
   }).catch(function(){ /* 外壳切换瞬间容忍失败 */ });
 }
 
@@ -1414,6 +1961,13 @@ $("btnChoose").addEventListener("click", function(){
     if(n>0) toast("已添加 "+n+" 张照片", "ok");
     return api("get_state");
   }).then(function(st){ S=st; render(); })
+    .catch(function(e){ toast(e.message||String(e), "err"); });
+});
+
+$("btnClearAll").addEventListener("click", function(){
+  if(!S.images.length){ toast("列表本来就是空的"); return; }
+  if(!confirm("清空全部照片和识别结果？此操作不可撤销。")) return;
+  api("clear_images").then(function(st){ S=st; render(); toast("已清空", "ok"); })
     .catch(function(e){ toast(e.message||String(e), "err"); });
 });
 $("btnStart").addEventListener("click", function(){
@@ -1438,14 +1992,22 @@ $("segOverlay").addEventListener("click", function(){
 function afterExport(res, kind){
   if(res.canceled) return;
   if(res.ok){
-    toast("导出成功：" + res.paths[res.paths.length-1], "ok");
+    var extra = "";
+    if(res.checks && res.checks.length){
+      extra = "（勾稽不平 " + res.checks.length + " 处，详见 Excel 标红与日志）";
+    }
+    toast("导出成功：" + res.paths[res.paths.length-1] + extra, res.checks && res.checks.length ? "" : "ok");
     if(confirm("已导出到：\n" + res.paths[0] + "\n\n是否立即打开文件？")){
       api("open_path", res.paths[0]);
     }
   } else toast("导出" + kind + "失败", "err");
 }
 $("btnExcel").addEventListener("click", function(){
-  api("export_excel").then(function(res){ afterExport(res, "Excel"); })
+  api("export_excel", "", "file").then(function(res){ afterExport(res, "Excel"); })
+    .catch(function(e){ toast(e.message||String(e), "err"); });
+});
+$("btnExcelTitle").addEventListener("click", function(){
+  api("export_excel", "", "title").then(function(res){ afterExport(res, "Excel"); })
     .catch(function(e){ toast(e.message||String(e), "err"); });
 });
 $("btnWord").addEventListener("click", function(){
@@ -1636,7 +2198,7 @@ function closeMenus(){
     m.classList.remove("open");
   });
 }
-Array.prototype.forEach.call(document.querySelectorAll(".menu > button"), function(b){
+Array.prototype.forEach.call(document.querySelectorAll(".menu > button:not(.ocr-split-main)"), function(b){
   b.addEventListener("click", function(ev){
     ev.stopPropagation();
     var m = b.parentElement, wasOpen = m.classList.contains("open");

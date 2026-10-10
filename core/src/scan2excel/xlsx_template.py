@@ -336,6 +336,21 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
             geo = json.loads(str(wb[GEO_SHEET]["A1"].value or "{}"))
         except Exception:
             geo = {}
+        # 页名被手动改名（如 WPS 里重命名 sheet）后几何键会失配 → 尺寸不符。
+        # 孤儿键与缺几何页数量一致时按工作表顺序对应，自动迁移并写回自愈。
+        page_names = [pg.page_name for pg in tpl.pages]
+        orphan = [k for k in geo if k not in page_names]
+        missing = [pg for pg in tpl.pages
+                   if not (geo.get(pg.page_name) or {}).get("col_fracs")]
+        if orphan and missing and len(orphan) == len(missing):
+            for k, pg in zip(orphan, missing):
+                geo[pg.page_name] = geo[k]
+                del geo[k]
+            try:
+                wb[GEO_SHEET]["A1"] = json.dumps(geo, ensure_ascii=False)
+                wb.save(path)
+            except Exception:
+                pass          # 文件被占用：本次内存已生效，下次载入再试
         for pg in tpl.pages:
             g = geo.get(pg.page_name) or {}
             pg.col_fracs = [float(x) for x in g.get("col_fracs", [])]
@@ -474,12 +489,16 @@ def _match_text(a: str, b: str) -> bool:
     return False
 
 
-def geometry_page_cells(structure, pg: XlsxSheetPage):
+def geometry_page_cells(structure, pg: XlsxSheetPage,
+                        use_text_bbox: bool = True):
     """按模板几何（外框 + 比例）生成单元格 {（r,c): (x, y, w, h)}。
 
     表格外框用检测到的第一条/最后一条横线与竖线（比内部细线稳得多），
     内部按模板比例铺格——这是 xlsx 模板"稳"的关键：内部线检测不稳时
     仍然能切出正确行列。
+    use_text_bbox=False 时只用线框：照片表格上下方常有页眉/落款等杂字，
+    并上 det 文字包围盒会把外框撑大、比例铺格整体压偏——两种外框
+    各铺一次，命中率高者胜。
     """
     xs, ys = structure.xs, structure.ys
     if len(xs) < 2 or len(ys) < 2 or not pg.col_fracs or not pg.row_fracs:
@@ -489,7 +508,7 @@ def geometry_page_cells(structure, pg: XlsxSheetPage):
     # 外框并上"文字内容框"：列/行线检测被截断（只检出左半）时，
     # 用 det 文字的包围盒兜底，避免铺格整体压缩
     items = getattr(structure, "det_items", None) or []
-    if items:
+    if use_text_bbox and items:
         tx0 = min(min(pt[0] for pt in b) for b, _t, _s in items)
         ty0 = min(min(pt[1] for pt in b) for b, _t, _s in items)
         tx1 = max(max(pt[0] for pt in b) for b, _t, _s in items)
@@ -503,6 +522,178 @@ def geometry_page_cells(structure, pg: XlsxSheetPage):
         for c in range(min(pg.n_cols, len(col_x) - 1)):
             cells[(r, c)] = (col_x[c], row_y[r],
                              col_x[c + 1] - col_x[c], row_y[r + 1] - row_y[r])
+    return cells
+
+
+def _photo_lines(structure) -> List[Dict]:
+    """把整表 det 文本按 y 聚成"文字行"（同一表格行的代码/名称/数字）。
+
+    检测线漏了一半时（暗部/细线），行带不可靠，但 det 框的 y 坐标
+    仍然精确——以文字行为锚做行级对齐（匹配门槛与取数都用它）。
+    返回 [{y, tol, items:[(cx,cy,rx,text,score)], code, name}]，按 y 升序；
+    rx = 文本框右边缘（数字右对齐，判列用右边缘比中心稳）。
+    """
+    items = [(sum(p[0] for p in b) / len(b), sum(p[1] for p in b) / len(b),
+              max(p[0] for p in b), max(p[1] for p in b) - min(p[1] for p in b),
+              str(t), float(s))
+             for b, t, s in (structure.det_items or []) if str(t).strip()]
+    if not items:
+        return []
+    heights = sorted(h for _cx, _cy, _rx, h, _t, _s in items)
+    med_h = heights[len(heights) // 2] or 10.0
+    items.sort(key=lambda e: e[1])
+    lines: List[Dict] = []
+    for cx, cy, rx, h, text, score in items:
+        if lines and cy - lines[-1]["y"] <= 0.6 * max(med_h, h):
+            ln = lines[-1]
+            ln["y"] = (ln["y"] * len(ln["items"]) + cy) / (len(ln["items"]) + 1)
+            ln["items"].append((cx, cy, rx, text, score))
+        else:
+            lines.append({"y": cy, "items": [(cx, cy, rx, text, score)],
+                          "code": "", "name": ""})
+    # 合并"被劈开的同一表格行"：右侧数字/右缘代码常比左侧文字低十几像素
+    # （det 框中心差），一条科目行被劈成两半会导致行对齐整体错一格。
+    # 相邻行距远小于典型行距（<0.5 倍）即视为同一行劈裂，合并。
+    if len(lines) >= 3:
+        gaps = sorted(b["y"] - a["y"] for a, b in zip(lines, lines[1:]))
+        split_gap = gaps[len(gaps) // 2] * 0.5
+        merged: List[Dict] = [lines[0]]
+        for ln in lines[1:]:
+            if ln["y"] - merged[-1]["y"] <= split_gap:
+                m = merged[-1]
+                n = len(m["items"])
+                m["y"] = (m["y"] * n + ln["y"] * len(ln["items"])) / (n + len(ln["items"]))
+                m["items"].extend(ln["items"])
+            else:
+                merged.append(ln)
+        lines = merged
+    # 相邻行距中位数 → 取数容差；行太少时退回行高
+    ys = [ln["y"] for ln in lines]
+    if len(ys) >= 3:
+        gaps = sorted(b - a for a, b in zip(ys, ys[1:]))
+        tol = gaps[len(gaps) // 2] * 0.55
+    else:
+        tol = med_h
+    for ln in lines:
+        ln["tol"] = max(tol, med_h * 0.8)
+        digits = [t for _cx, _cy, _rx, t, _s in ln["items"]
+                  if t and sum(ch.isdigit() for ch in t) >= max(3, len(t) - 1)]
+        cjk = [t for _cx, _cy, _rx, t, _s in ln["items"]
+               if t and any('一' <= ch <= '鿿' for ch in t)]
+        ln["code"] = digits[0] if digits else ""
+        ln["name"] = max(cjk, key=len, default="")
+        ln["text"] = "".join(t for _cx, _cy, _rx, t, _s in
+                             sorted(ln["items"], key=lambda e: e[0]))
+    return lines
+
+
+def _tpl_key_rows(tpl_page: XlsxSheetPage):
+    """模板参与行键匹配的数据行 [(行号, 代码, 名称)]。"""
+    num_rows = {r for (r, _c) in tpl_page.num_cells}
+    out = []
+    for r in range(tpl_page.n_rows):
+        if r < tpl_page.header_rows or (num_rows and r not in num_rows):
+            continue
+        code = str(tpl_page.rows[r][0] if tpl_page.rows[r] else "").strip()
+        name = str(tpl_page.rows[r][1] if len(tpl_page.rows[r]) > 1 else "").strip()
+        out.append((r, code, name))
+    return out
+
+
+def _match_rows_to_lines(tpl_page: "XlsxSheetPage",
+                         lines: List[Dict]):
+    """模板行 ↔ 照片文字行 的 VLOOKUP 式对齐（与像素网格无关）。
+
+    返回 (row_line {模板行: 行号}, unmatched_tpl, extra_lines)。
+    第一轮整行键（含粘格），第二轮名称；合计等无代码但有名称的行
+    也参与第二轮（照片里"合计"字样可寻）。
+    """
+    row_line: Dict[int, int] = {}
+    used = set()
+    keys = _tpl_key_rows(tpl_page)
+    code_rows = [(r, c, n) for r, c, n in keys if _key_code(c)]
+    # 第一轮 A：代码完全相等优先（子串匹配会把 302 配到 30201 的行上，
+    # 先把能精确对号的行占住，剩下的才允许子串近似）
+    for tr, code, name in code_rows:
+        for li, ln in enumerate(lines):
+            if li in used:
+                continue
+            if code and ln["code"] == code:
+                row_line[tr] = li
+                used.add(li)
+                break
+    # 第一轮 B：整行键匹配（含"170中央预算支出"粘格场景）
+    for tr, code, name in code_rows:
+        if tr in row_line:
+            continue
+        for li, ln in enumerate(lines):
+            if li in used:
+                continue
+            if _row_key_match(code, name, ln["code"], ln["name"]) or \
+               (code and code in ln["text"] and not ln["code"]):
+                row_line[tr] = li
+                used.add(li)
+                break
+    for tr, code, name in keys:                    # 第二轮：名称（含合计行）
+        if tr in row_line or not name:
+            continue
+        for li, ln in enumerate(lines):
+            if li in used:
+                continue
+            if ln["name"] and _match_text(name, ln["name"]):
+                row_line[tr] = li
+                used.add(li)
+                break
+    matched_tpl = {tr for tr in row_line}
+    unmatched_tpl = [(tr, c, n) for tr, c, n in code_rows if tr not in matched_tpl]
+    code_lines = {li for li, ln in enumerate(lines) if ln["code"]}
+    extra_lines = [(li, lines[li]["code"]) for li in sorted(code_lines - used)]
+    return row_line, unmatched_tpl, extra_lines
+
+
+def _interp_y(pairs, r: int):
+    """已匹配 (模板行, y) 序列对行 r 的分段线性插值；越界取端点。"""
+    if not pairs:
+        return None
+    if r <= pairs[0][0]:
+        return pairs[0][1]
+    if r >= pairs[-1][0]:
+        return pairs[-1][1]
+    for (r0, y0), (r1, y1) in zip(pairs, pairs[1:]):
+        if r0 <= r <= r1:
+            if r1 == r0:
+                return y0
+            return y0 + (y1 - y0) * (r - r0) / (r1 - r0)
+    return None
+
+
+def _row_aligned_cells(structure, pg: XlsxSheetPage,
+                       bottom_aligned: bool = False):
+    """行带用检测到的横线（真实），列用模板比例。
+
+    照片被裁掉表尾/表头时，纯比例行带会把整页行数压进可见高度、行行
+    错位；而横线检测对裁切与光照渐变更鲁棒（横线通常更粗更密）。
+    模板行 i ↔ 照片第 i 条行带（bottom_aligned 时从未尾对齐——照片
+    裁掉的是表头）。行数不足以覆盖的模板行不生成格子（视为不可见）。
+    """
+    ys = structure.ys
+    if len(ys) < 3 or not pg.col_fracs:
+        return {}
+    xs = structure.xs
+    left, right = xs[0], xs[-1]
+    items = getattr(structure, "det_items", None) or []
+    if items:
+        tx0 = min(min(p[0] for p in b) for b, _t, _s in items)
+        tx1 = max(max(p[0] for p in b) for b, _t, _s in items)
+        left, right = min(left, tx0), max(right, tx1)
+    col_x = [int(round(left + f * (right - left))) for f in pg.col_fracs]
+    n_vis = min(pg.n_rows, len(ys) - 1)
+    cells = {}
+    for i in range(n_vis):
+        r = (pg.n_rows - n_vis + i) if bottom_aligned else i
+        y0, y1 = int(ys[i]), int(ys[i + 1])
+        for c in range(min(pg.n_cols, len(col_x) - 1)):
+            cells[(r, c)] = (col_x[c], y0, col_x[c + 1] - col_x[c], y1 - y0)
     return cells
 
 
@@ -594,6 +785,7 @@ def match_xlsx_template(templates: List[XlsxTemplate],
         return None, None, 0.0, "无模板", {}
     best = (None, None, 0.0, {})
     notes = []
+    lines = None      # 照片文字行（懒加载，各模板页共用）
     for doc in templates:
         if force_doc and doc.name != force_doc:
             continue
@@ -605,26 +797,84 @@ def match_xlsx_template(templates: List[XlsxTemplate],
                 continue
             # ---- 几何路径 ----
             if pg.col_fracs and pg.row_fracs and structure.det_items:
-                cells = geometry_page_cells(structure, pg)
-                if cells:
-                    mapped, centers = texts_and_centers_in_cells(structure, cells)
-                    hit = sum(1 for cell, t in texts.items()
+                # 三类铺格候选，高者胜：
+                # ① 纯比例（外框=线框）② 纯比例（外框并文字包围盒）
+                # ③ 行对齐——行带用检测到的真实横线、列用模板比例，
+                #    专治照片被裁掉表头/表尾导致的比例行带整体错位
+                #    （横线更粗更密，裁切/渐变光照下通常仍可检出）
+                candidates = [geometry_page_cells(structure, pg, False),
+                              geometry_page_cells(structure, pg, True),
+                              _row_aligned_cells(structure, pg, False),
+                              _row_aligned_cells(structure, pg, True)]
+
+                def _score(mapped, cells):
+                    """结构区命中率，只计照片里"看得见的行"。
+
+                    照片常被裁掉表头/表尾：模板里被裁部分的锚文本在
+                    照片中不存在，算失配会把好匹配压到门槛之下。
+                    模板某行带内一个 det 文本中心都没有 ⇒ 该行剔除
+                    出分母。可见锚太少（<4 或 <30%）时不可判，记 0。
+                    """
+                    vis_rows = set()
+                    for box, _t, _s in structure.det_items:
+                        cy = sum(p[1] for p in box) / len(box)
+                        for (r, _c), (x, y, w, h) in cells.items():
+                            if y <= cy < y + h:
+                                vis_rows.add(r)
+                                break
+                    vis = {cell: t for cell, t in texts.items()
+                           if cell[0] in vis_rows}
+                    if len(vis) < 4 or len(vis) < len(texts) * 0.3:
+                        return 0.0
+                    hit = sum(1 for cell, t in vis.items()
                               if _match_text(t, mapped.get(cell, "")))
-                    score = hit / len(texts)
-                    if score >= 0.25:
-                        # 文字锚点校正：匹配成功的格子拟合线性映射后重铺
+                    return hit / len(vis)
+
+                geo_best = (0.0, {})
+                for cells in candidates:
+                    if not cells:
+                        continue
+                    mapped, centers = texts_and_centers_in_cells(
+                        structure, cells)
+                    score = _score(mapped, cells)
+                    # 文字锚点校正：匹配成功的格子拟合线性映射后重铺。
+                    # 初始命中率低时尤其关键——纯比例铺格极易被外框偏差
+                    # 拉偏，只要还有 4+ 个锚点就有机会校正回来
+                    if score >= 0.10:
                         good = {k: v for k, v in centers.items()
                                 if k in texts and _match_text(texts[k],
                                                               mapped.get(k, ""))}
-                        cells = refine_cells_by_anchors(pg, cells, good)
-                        mapped2, _c2 = texts_and_centers_in_cells(structure, cells)
-                        score2 = sum(1 for cell, t in texts.items()
-                                     if _match_text(t, mapped2.get(cell, ""))) / len(texts)
-                        if score2 > score:
-                            score = score2
-                    if score > best[2]:
-                        best = (doc, pg, score, cells)
-                    continue
+                        if len(good) >= 4:
+                            cells2 = refine_cells_by_anchors(pg, cells, good)
+                            if cells2:
+                                mapped2, _c2 = texts_and_centers_in_cells(
+                                    structure, cells2)
+                                score2 = _score(mapped2, cells2)
+                                if score2 > score:
+                                    score, cells = score2, cells2
+                    if score > geo_best[0]:
+                        geo_best = (score, cells)
+                score, cells = geo_best
+                # 行键得分：照片文字行里"认得出"多少模板科目行。与像素
+                # 对齐无关——检测线碎裂/漏检导致几何铺格错位时，科目代码
+                # 仍能可靠辨认（填充本身走 vlookup 行映射，不依赖像素）。
+                if lines is None:
+                    lines = _photo_lines(structure)
+                if lines:
+                    key_rows = [(r, c) for r, c, _n in _tpl_key_rows(pg)
+                                if _key_code(c)]
+                    row_line, _un, _ex = _match_rows_to_lines(pg, lines)
+                    code_row_set = {r for r, c in key_rows}
+                    used_by_code = {li for tr, li in row_line.items()
+                                    if tr in code_row_set}
+                    side_b = len(used_by_code) / max(1, len(key_rows))
+                    n_code_lines = sum(1 for ln in lines if ln["code"])
+                    if n_code_lines:
+                        side_a = min(1.0, len(used_by_code) / n_code_lines)
+                        score = max(score, (side_a + side_b) / 2)
+                if score > best[2]:
+                    best = (doc, pg, score, cells)
+                continue
             # ---- 尺寸精确路径（无几何信息）----
             if (pg.n_rows, pg.n_cols) != (n_rows, n_cols):
                 notes.append(f"{doc.name}·{pg.page_name} "
@@ -781,6 +1031,17 @@ def build_row_mapping(tpl_page: XlsxSheetPage,
     return row_map, unmatched_tpl, extra_geo
 
 
+def _has_meaningful(text: str) -> bool:
+    """是否含有效字符（数字/字母/汉字）；纯标点（如 "--"、"——"、"."）视为空。
+
+    OCR 会把空白格的线痕/噪点读成纯破折号，数值区出现这些一律丢弃。
+    """
+    for ch in text or "":
+        if ch.isalnum() or '一' <= ch <= '鿿':
+            return True
+    return False
+
+
 def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
                         engine, doc_name: str = "",
                         cells: Optional[Dict[Cell, Tuple[int, int, int, int]]] = None,
@@ -846,29 +1107,32 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
         geo_keys[gr] = (code, name)
 
     if fill_mode == "vlookup" and tpl_page.n_rows:
-        row_map, unmatched_tpl, extra_geo = build_row_mapping(tpl_page, geo_keys)
-        # 未匹配行（合计等空代码行）：按同段邻近匹配行的偏移对齐
-        mid = max(tpl_page.mid_rows) if tpl_page.mid_rows else -1
-
-        def section_of(r: int) -> int:
-            return 0 if (mid < 0 or r <= mid) else 1
-
-        offsets_within = {}
-        for tr, gr in row_map.items():
-            offsets_within.setdefault(section_of(tr), []).append(gr - tr)
-        for r in data_geo_rows:
-            if r in row_map:
-                continue
-            code = str(tpl_page.rows[r][0] if tpl_page.rows[r] else "").strip()
-            name = str(tpl_page.rows[r][1] if len(tpl_page.rows[r]) > 1 else "").strip()
-            if _key_code(code):
-                continue          # 有代码但没匹配上 → 保持未填充
-            seg = offsets_within.get(section_of(r))
-            if seg:
-                from statistics import median as _med
-                gr = r + int(round(_med(seg)))
-                if 0 <= gr < n_rows:
-                    row_map[r] = gr
+        # 行对齐以"照片文字行"为锚（det 框 y 精确，不受检测线漏检影响）；
+        # 检测线碎裂时几何行带一个跨多科目，按行带取数会把几行数字混进一格
+        lines = _photo_lines(structure)
+        row_map, unmatched_tpl, extra_geo = _match_rows_to_lines(tpl_page, lines)
+        # 合计等无代码行：按邻近已匹配行的 y 线性插值认领最近的未用行
+        pairs = sorted((tr, lines[li]["y"]) for tr, li in row_map.items())
+        if pairs:
+            used_li = set(row_map.values())
+            ys = [lines[li]["y"] for li in range(len(lines))]
+            gaps = sorted(b - a for a, b in zip(ys, ys[1:])) or [20.0]
+            grab = gaps[len(gaps) // 2] * 1.3
+            for r in data_geo_rows:
+                if r in row_map:
+                    continue
+                code = str(tpl_page.rows[r][0] if tpl_page.rows[r] else "").strip()
+                if _key_code(code):
+                    continue          # 有代码但没匹配上 → 保持未填充
+                y_exp = _interp_y(pairs, r)
+                if y_exp is None:
+                    continue
+                li = min((li for li in range(len(lines))
+                          if li not in used_li and abs(ys[li] - y_exp) <= grab),
+                         key=lambda li: abs(ys[li] - y_exp), default=None)
+                if li is not None:
+                    row_map[r] = li
+                    used_li.add(li)
         mismatch = {
             "mode": "vlookup",
             "matched": len(row_map),
@@ -876,15 +1140,15 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
             "extra": [[gr, gc] for (gr, gc) in extra_geo],
         }
         if unmatched_tpl:
-            head = "；".join(f"第{tr + 1}行[{code} {name}]"
-                            for (tr, code, name) in unmatched_tpl[:4])
-            warnings.append(f"{len(unmatched_tpl)} 行科目未在照片中找到对应"
-                            f"（已留空）：{head}"
-                            + ("…" if len(unmatched_tpl) > 4 else ""))
+            head = "\n".join(f"  第{tr + 1}行 [{code} {name}]"
+                             for (tr, code, name) in unmatched_tpl[:6])
+            warnings.append(f"{len(unmatched_tpl)} 行科目未在照片中找到对应（已留空）：\n{head}"
+                            + ("…" if len(unmatched_tpl) > 6 else ""))
         if extra_geo:
-            head = "；".join(f"第{gr + 1}行[{code}]" for (gr, code) in extra_geo[:4])
-            warnings.append(f"照片中有 {len(extra_geo)} 行模板未包含（已忽略）：{head}"
-                            + ("…" if len(extra_geo) > 4 else ""))
+            head = "\n".join(f"  第{gr + 1}行 [{code}]"
+                             for (gr, code) in extra_geo[:6])
+            warnings.append(f"照片中有 {len(extra_geo)} 行模板未包含（已忽略）：\n{head}"
+                            + ("…" if len(extra_geo) > 6 else ""))
     else:
         # 按位置填充（旧行为）；仍记录键不匹配的行以提示
         row_map = {r: r for r in data_geo_rows}
@@ -900,30 +1164,115 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
 
     # ---- 填值：以"数字区域"为唯一依据逐格填 ----
     # 数字区域之外的格（表头/中缝表头/合计标签等冻结文本）永不覆盖。
+    # vlookup：按"科目所在文字行 y±容差 × 列 x 带"取 det 文本——行带
+    # 错位/碎裂时依然取到本科目自己的数字；position：按几何格裁切识别。
+    col_band: Dict[int, Tuple[int, int]] = {}
+    for (_r2, c2), (x, _y, w, _h) in cells.items():
+        if c2 in col_band:
+            x0, x1 = col_band[c2]
+            col_band[c2] = (min(x0, x), max(x1, x + w))
+        else:
+            col_band[c2] = (x, x + w)
+    numeric_cols = sorted({tc for (_tr, tc) in tpl_page.num_cells})
+
+    def _line_num_items(ln):
+        """行内数值项（剔除右缘重复的科目代码：纯短数字且等于行代码，
+        账表两侧都有代码列，右缘代码必然与行代码相同）。"""
+        out = []
+        for cx, _cy, rx, t, s in ln["items"]:
+            if (ln["code"] and t == ln["code"]
+                    and re.fullmatch(r"\d{1,6}", t) and cx > W * 0.85):
+                continue
+            out.append((cx, rx, t, s))
+        return out
+
+    def _band_col(cx):
+        for tc in numeric_cols:
+            x0, x1 = col_band.get(tc, (0, W))
+            if x0 - 4 <= cx < x1 + 4:
+                return tc
+        return None
+
+    # ---- 数值列两遍自检（防错位）----
+    # 第一遍按列带粗分配；同一数值列的数字右对齐，其右边缘中位数比列带
+    # 本身更可靠——列带被外框漂移/refine 拉偏半列时，逐行带内判列会把
+    # 整行数字推去邻列（实测 1.jpg 全行右移、行尾值被吃掉）。第二遍把
+    # 每个数字归给"右边缘最近的列参考"，全页 20+ 行投票出的对齐关系
+    # 能拉回个别行/列的漂移；离参考过远的项保留列带结果不硬猜。
+    from statistics import median as _median
+    items_all: List[Tuple[int, int, float, float, str, float]] = []
+    for li in {li for li in row_map.values()
+               if fill_mode == "vlookup" and isinstance(li, int)
+               and 0 <= li < len(lines)}:
+        for cx, rx, t, s in _line_num_items(lines[li]):
+            tc0 = _band_col(cx)
+            if tc0 is not None:
+                items_all.append((li, tc0, cx, rx, t, s))
+    col_ref: Dict[int, float] = {}
+    for tc in numeric_cols:
+        rxs = [rx for (_li, tc0, _cx, rx, _t, _s) in items_all if tc0 == tc]
+        if len(rxs) >= 2:
+            col_ref[tc] = _median(rxs)
+    n_fixed = 0
+    if col_ref:
+        refs = sorted(col_ref)
+        pitch = min((b - a for a, b in zip(refs, refs[1:])), default=200.0)
+        lim = max(40.0, pitch * 0.45)
+        for i, (li, tc0, cx, rx, t, s) in enumerate(items_all):
+            tc_best, d_best = tc0, lim
+            for tc, ref in col_ref.items():
+                d = abs(rx - ref)
+                if d < d_best:
+                    tc_best, d_best = tc, d
+            items_all[i] = (li, tc_best, cx, rx, t, s)
+            if tc_best != tc0:
+                n_fixed += 1
+    filled_by_line: Dict[int, Dict[int, List[Tuple[float, str, float]]]] = {}
+    for li, tc, cx, rx, t, s in items_all:
+        filled_by_line.setdefault(li, {}).setdefault(tc, []).append((cx, t, s))
+    if n_fixed:
+        warnings.append(f"{n_fixed} 处数值列位按同列对齐自动校正，请抽查")
+
     for (tr, tc) in sorted(tpl_page.num_cells):
         if tr >= len(out_rows) or tc >= len(out_rows[tr]):
             continue
-        gr = row_map.get(tr)
-        if gr is None:
+        key = row_map.get(tr)
+        if key is None:
             out_rows[tr][tc] = ""    # 未匹配行：留空，不按位置猜
             continue
-        text, score = cell_text(gr, tc)
+        if fill_mode == "vlookup":
+            got = filled_by_line.get(key, {}).get(tc, [])
+            got.sort(key=lambda e: e[0])
+            text = "".join(t for _cx, t, _s in got)
+            score = min((s for _cx, _t, s in got), default=1.0)
+        else:
+            text, score = cell_text(key, tc)
+        if text and not _has_meaningful(text):
+            text = ""          # 纯标点（"--" 等线痕误读）不入表
         out_rows[tr][tc] = text
         if text:
             page.scores[f"{tr},{tc}"] = score
             page.min_score = min(page.min_score, score)
 
-    # 覆盖预览：数字区绿框（高亮实际取数的几何格）
+    # 覆盖预览：数字区绿框（vlookup=实际取数的文字行条带；position=几何格）
     import cv2
     overlay = structure.image.copy()
+    strips: Dict = {}      # (模板行, 列) -> 条带矩形（cell_boxes 用）
     for (tr, tc) in sorted(tpl_page.num_cells):
-        gr = row_map.get(tr)
-        if gr is None:
+        key = row_map.get(tr)
+        if key is None:
             continue
-        box = cells.get((gr, tc))
-        if box is not None:
-            x, y, w, h = box
-            cv2.rectangle(overlay, (x, y), (x + w, y + h), (80, 200, 80), 2)
+        if fill_mode == "vlookup":
+            x0, x1 = col_band.get(tc, (0, W))
+            ln = lines[key]
+            y0 = int(ln["y"] - ln["tol"])
+            strips[(tr, tc)] = (x0, y0, x1 - x0, int(ln["tol"] * 2))
+        else:
+            box = cells.get((key, tc))
+            if box is not None:
+                strips[(tr, tc)] = tuple(box)
+    for x, y, w, h in strips.values():
+        cv2.rectangle(overlay, (x, y), (x + w, y + h), (80, 200, 80), 2)
 
     page.mode = "table"
     page.borderless = False
@@ -936,9 +1285,15 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
     page.row_mismatch = mismatch
     from .service import _encode_jpeg, _scale_for
     sc = _scale_for(structure.image)
-    page.cell_boxes = {
-        f"{r},{c}": [int(x * sc), int(y * sc), int(w * sc), int(h * sc)]
-        for (r, c), (x, y, w, h) in cells.items()}
+    # 单元格框：key 用"模板行号"（与 page.rows 一致，点击单元格↔图片
+    # 高亮才对位）。vlookup 时直接用取数条带；position 回退铺格矩形。
+    page.cell_boxes = {}
+    for (r2, c2), (x, y, w, h) in cells.items():
+        st = strips.get((r2, c2))
+        if st is None:
+            st = (x, y, w, h)
+        page.cell_boxes[f"{r2},{c2}"] = [int(st[0] * sc), int(st[1] * sc),
+                                         int(st[2] * sc), int(st[3] * sc)]
     page.overlay_jpeg = _encode_jpeg(overlay)
     return warnings, mismatch
 
@@ -972,8 +1327,13 @@ def fill_template_workbook(tpl_path: Path, sheet_fills: Dict[str, object],
                     cell = ws.cell(row=r, column=c)
                     if isinstance(cell.value, str) and cell.value.startswith("="):
                         continue      # 不覆盖公式
-                    cell.value = (float(str(v).replace(",", ""))
-                                  if _looks_numeric(v) else v)
+                    # 空串必须写成 None（真空单元格）："" 参与 C3-D3 之类
+                    # 算术会 #VALUE!，把整行的条件格式（勾稽标红）炸掉
+                    if isinstance(v, str) and not v.strip():
+                        cell.value = None
+                    else:
+                        cell.value = (float(str(v).replace(",", ""))
+                                      if _looks_numeric(v) else v)
                 except Exception:
                     continue
     wb.save(Path(out_path))
@@ -1036,8 +1396,355 @@ def _instantiate_cf(formula: str, arow: int, acol: int, r: int, c: int) -> str:
     return re.sub(r"(\$?[A-Za-z]{1,3})(\$?\d+)", repl, formula)
 
 
+def _wrap_round2(formula: str) -> Optional[str]:
+    """把表达式公式顶层比较的两侧包上 ROUND(...,2)，无比较符则原样。
+
+    用户勾稽公式（C3-D3+E3-F3<>G3-H3）在 IEEE 求和下有尾差，亿级数值
+    会差 ~1e-8——Excel 严格比较会把数学上配平的真平行标红（实测
+    -7341906.190000057 ≠ -7341906.19）。ROUND 到分即可消除尾差，又不
+    放过真实错误（账目最小差异 0.01 元）。含引号的复杂公式不动。
+    """
+    expr = str(formula).lstrip("=")
+    if '"' in expr:
+        return None
+    m = _top_cmp(expr)
+    if not m:
+        return None
+    op, lhs, rhs = m
+    lhs, rhs = lhs.strip(), rhs.strip()
+    if not lhs or not rhs:
+        return None
+    return f"ROUND({lhs},2){op}ROUND({rhs},2)"
+
+
+def _summary_row_label(pg, r: int) -> str:
+    """勾稽不平行的行的「代码 名称」标签（行号 0 基）。"""
+    row = (pg.rows or [])[r] if 0 <= r < len(pg.rows or []) else None
+    if not row:
+        return ""
+    tag = " ".join(str(x) for x in (row[0], row[1]) if str(x).strip())
+    return tag
+
+
+def append_summary_sheet(out_path: Path, pages: List,
+                         sheet_titles: List[str]) -> None:
+    """导出工作簿追加「汇总检查」sheet（插在最前）。
+
+    每张表一行：勾稽（条件格式）结论、不平行明细、行对齐、耗时——
+    与界面「OCR识别结果」页同源；不平行的结论红字、平衡绿字。
+    """
+    from openpyxl import load_workbook
+    from openpyxl.styles import Font, PatternFill
+    wb = load_workbook(Path(out_path))
+    if "汇总检查" in wb.sheetnames:
+        del wb["汇总检查"]
+    ws = wb.create_sheet("汇总检查", 0)
+    rows = [("序号", "表名（sheet）", "照片", "标题", "模板", "网格",
+             "勾稽结论", "不平行明细", "行对齐", "耗时(秒)")]
+    n_bad = 0
+    for i, (pg, title) in enumerate(zip(pages, sheet_titles), start=1):
+        bad = list(getattr(pg, "check_rows", None) or [])
+        mm = getattr(pg, "row_mismatch", None) or {}
+        align = f"{mm.get('matched', 0)} 行匹配"
+        if mm.get("unmatched"):
+            align += f"，{len(mm['unmatched'])} 未找到"
+        if mm.get("extra"):
+            align += f"，{len(mm['extra'])} 多余"
+        detail = "；".join(
+            f"第{b + 1}行[{_summary_row_label(pg, b)}]" for b in bad[:8])
+        if len(bad) > 8:
+            detail += f"…（共 {len(bad)} 行）"
+        template = str(getattr(pg, "template", "") or "")
+        if not template:
+            concl = "未套模板"
+        elif bad:
+            concl = f"✗ {len(bad)} 行不平"
+            n_bad += 1
+        else:
+            concl = "✓ 平衡"
+        rows.append((i, title, getattr(pg, "name", ""),
+                     str(getattr(pg, "title", "") or ""), template,
+                     f"{pg.n_rows}×{pg.n_cols}", concl, detail, align,
+                     round(float(getattr(pg, "elapsed", 0) or 0), 1)))
+    for row in rows:
+        ws.append(row)
+    # 样式：表头加粗+底色；勾稽结论着色；列宽；冻结表头
+    head_font = Font(bold=True)
+    head_fill = PatternFill("solid", fgColor="EAF2E8")
+    red = Font(color="CC0000", bold=True)
+    green = Font(color="2E7D32")
+    gray = Font(color="808080")
+    for c in ws[1]:
+        c.font = head_font
+        c.fill = head_fill
+    for ri in range(2, len(rows) + 1):
+        concl = ws.cell(ri, 7)
+        if str(concl.value).startswith("✗"):
+            concl.font = red
+        elif str(concl.value).startswith("✓"):
+            concl.font = green
+        elif concl.value == "未套模板":
+            concl.font = gray
+    for col, wd in zip("ABCDEFGHIJ", (6, 30, 12, 32, 24, 9, 14, 48, 20, 9)):
+        ws.column_dimensions[col].width = wd
+    ws.freeze_panes = "A2"
+    wb.save(Path(out_path))
+    wb.close()
+
+
+def copy_template_sheet(src_ws, dst_wb, title: str):
+    """把模板工作表复制进目标工作簿（保留值/样式/合并/条件格式等）。
+
+    openpyxl 不支持跨工作簿 copy_worksheet，这里逐元素复制；条件格式
+    （用户的勾稽标红规则）用深拷贝带回——导出的 Excel 打开即可见标红。
+    """
+    from copy import copy as _copy
+    from openpyxl.utils import get_column_letter
+
+    dst = dst_wb.create_sheet(title=title)
+    for row in src_ws.iter_rows():
+        for cell in row:
+            nc = dst.cell(row=cell.row, column=cell.column, value=cell.value)
+            # 跨工作簿不能直接拷 _style（StyleArray 索引指向源工作簿的
+            # 样式表，到目标表越界/错位）——按值重建样式，模板里画的
+            # 框线/底色/字体由此随导出保留
+            if cell.has_style:
+                nc.font = _copy(cell.font)
+                nc.fill = _copy(cell.fill)
+                nc.border = _copy(cell.border)
+                nc.alignment = _copy(cell.alignment)
+                nc.protection = _copy(cell.protection)
+                nc.number_format = cell.number_format
+    for mr in list(src_ws.merged_cells.ranges):
+        try:
+            dst.merge_cells(str(mr))
+        except Exception:
+            pass
+    for key, dim in src_ws.column_dimensions.items():
+        if dim.width:
+            dst.column_dimensions[key].width = dim.width
+    for key, dim in src_ws.row_dimensions.items():
+        if dim.height:
+            dst.row_dimensions[key].height = dim.height
+    # 条件格式（勾稽规则）——必须深拷贝，rule 对象不可跨工作簿共用；
+    # 表达式规则顶层比较两侧包 ROUND(...,2) 消浮点尾差防假红
+    for cf in src_ws.conditional_formatting:
+        for rule in cf.rules:
+            try:
+                rule2 = _copy(rule)
+                try:
+                    if rule2.type == "expression" and rule2.formula:
+                        wrapped = _wrap_round2(str(rule2.formula[0]))
+                        if wrapped:
+                            rule2.formula = [wrapped]
+                except Exception:
+                    pass
+                dst.conditional_formatting.add(str(cf.sqref), rule2)
+            except Exception:
+                pass
+    try:
+        if src_ws.freeze_panes:
+            dst.freeze_panes = src_ws.freeze_panes
+    except Exception:
+        pass
+    return dst
+
+
+def build_export_workbook(out_path: Path, pages: List,
+                          naming: str = "file") -> List[str]:
+    """把识别结果导出为工作簿：套用了模板的页从模板**复制 sheet**（保留
+    条件格式/合并/结构区文本），未套模板的页按普通方式生成。
+
+    naming: "file"（sheet 名=文件名，默认）| "title"（优先表标题，其次
+    模板页名，最后文件名）。
+    title 模式且套了模板时：sheet 名 = 标题#模板页名（模板页名与标题
+    尾部重复的公共段去掉，如 会计月计表第一页→第一页）；同标题同模板页
+    多张时全组加 #序号（#1、#2…），供公式区分同名表。
+    返回导出后各 sheet 名（供勾稽求值定位）。
+    """
+    from openpyxl import Workbook, load_workbook
+    from collections import Counter, defaultdict
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    used: Dict[str, int] = {}
+    tpl_cache: Dict[str, object] = {}
+    sheet_titles: List[str] = []
+
+    def pg_tpl_page(pg) -> str:
+        return str(getattr(pg, "template_page", "") or "").strip()
+
+    def pick_title(pg) -> str:
+        if naming == "title":
+            for cand in (getattr(pg, "title", ""),
+                         getattr(pg, "template_page", ""),
+                         getattr(pg, "name", "")):
+                if cand and str(cand).strip():
+                    return str(cand).strip()
+        return str(getattr(pg, "name", "") or "Sheet")
+
+    # 同 (标题, 模板页) 分组计数：>1 的组全组带 #序号
+    group_total = Counter((pick_title(pg), pg_tpl_page(pg)) for pg in pages)
+    group_seen: Dict[Tuple[str, str], int] = defaultdict(int)
+
+    def clean(s: str) -> str:
+        return re.sub(r"[\/*?:\[\]]", "_", s or "").strip()
+
+    def make_name(pg) -> str:
+        base = clean(pick_title(pg)) or "Sheet"
+        tp = pg_tpl_page(pg)
+        tail = ""
+        if tp and naming == "title":
+            # 模板页名开头与标题里重复的段去掉（如 会计月计表第一页→第一页）
+            for k in range(len(tp), 0, -1):
+                if tp[:k] in base:
+                    tp = tp[k:]
+                    break
+            if tp:
+                tail = "#" + clean(tp)
+        key = (pick_title(pg), pg_tpl_page(pg))
+        if group_total[key] > 1:
+            group_seen[key] += 1
+            tail += "#%d" % group_seen[key]
+        # 31 字符上限：优先压标题（去共用的（国库）），绝不截掉页型/序号尾
+        if len(base) + len(tail) > 31:
+            squeezed = base.replace("（国库）", "")
+            if len(squeezed) + len(tail) <= 31:
+                base = squeezed
+            else:
+                base = base[:31 - len(tail)]
+        return base + tail
+
+    def safe_title(raw: str) -> str:
+        cleaned = clean(raw) or "Sheet"
+        cleaned = cleaned[:31]
+        if cleaned not in used:
+            used[cleaned] = 1
+            return cleaned
+        used[cleaned] += 1
+        suffix = f"({used[cleaned]})"
+        return cleaned[:31 - len(suffix)] + suffix
+
+    for pg in pages:
+        title = safe_title(make_name(pg))
+        tpl_file = str(getattr(pg, "template_file", "") or "")
+        tpl_page = pg_tpl_page(pg)
+        ws = None
+        if tpl_file and Path(tpl_file).is_file() and tpl_page:
+            src_wb = tpl_cache.get(tpl_file)
+            if src_wb is None:
+                try:
+                    src_wb = load_workbook(Path(tpl_file), data_only=False)
+                    tpl_cache[tpl_file] = src_wb
+                except Exception:
+                    src_wb = None
+            if src_wb is not None and tpl_page in getattr(src_wb, "sheetnames", []):
+                ws = copy_template_sheet(src_wb[tpl_page], wb, title)
+                _fill_sheet_values(ws, pg)
+        if ws is None:
+            # 未套模板：普通 sheet（原有行为）
+            ws = wb.create_sheet(title)
+            _fill_plain_sheet(ws, pg)
+        sheet_titles.append(ws.title)
+
+    for src_wb in tpl_cache.values():
+        try:
+            src_wb.close()
+        except Exception:
+            pass
+    if not wb.sheetnames:
+        wb.create_sheet(title="Sheet")
+    wb.save(Path(out_path))
+    wb.close()
+    return sheet_titles
+
+
+def _fill_sheet_values(ws, pg) -> None:
+    """向（从模板复制的）工作表填识别值：不覆盖公式，跳过合并格非锚点。"""
+    merged_children = set()
+    for mr in ws.merged_cells.ranges:
+        for rr in range(mr.min_row, mr.max_row + 1):
+            for cc in range(mr.min_col, mr.max_col + 1):
+                if (rr, cc) != (mr.min_row, mr.min_col):
+                    merged_children.add((rr, cc))
+    rows = getattr(pg, "rows", []) or []
+    for r, row in enumerate(rows, start=1):
+        for c, v in enumerate(row, start=1):
+            if (r, c) in merged_children:
+                continue          # 合并格非锚点不可写
+            try:
+                cell = ws.cell(row=r, column=c)
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    continue      # 不覆盖公式
+                # 空串必须写成 None（真空单元格）："" 参与 C3-D3 之类
+                # 算术会 #VALUE!，把整行的条件格式（勾稽标红）炸掉
+                if isinstance(v, str) and not v.strip():
+                    cell.value = None
+                else:
+                    cell.value = (float(str(v).replace(",", ""))
+                                  if _looks_numeric(v) else v)
+            except Exception:
+                continue
+
+
+def _fill_plain_sheet(ws, pg) -> None:
+    """未套模板的页：写值 + 表头样式 + 合并还原（对齐旧 write_workbook 行为）。"""
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    header_fill = PatternFill("solid", fgColor="EAF2E8")
+    rows = getattr(pg, "rows", []) or []
+    for r, row in enumerate(rows, start=1):
+        for c, v in enumerate(row, start=1):
+            cell = ws.cell(row=r, column=c,
+                           value=(float(str(v).replace(",", ""))
+                                  if _looks_numeric(v) else v))
+            cell.alignment = Alignment(vertical="center")
+    for m in getattr(pg, "merges", []) or []:
+        try:
+            r, c, rspan, cspan = (int(x) for x in m)
+            if rspan > 1 or cspan > 1:
+                ws.merge_cells(start_row=r + 1, start_column=c + 1,
+                               end_row=r + rspan, end_column=c + cspan)
+        except Exception:
+            continue
+    if rows:
+        n_cols = max(len(r) for r in rows)
+        for c in range(1, n_cols + 1):
+            cell = ws.cell(row=1, column=c)
+            cell.fill = header_fill
+            cell.font = Font(bold=True)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+
+def _x15(x):
+    """按 Excel 语义把数值截到 15 位有效数字（Excel 的比较精度）。"""
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return x
+    if f != f or f in (float("inf"), float("-inf")) or f == 0:
+        return f
+    return float(f"{f:.15g}")
+
+
+def _top_cmp(expr):
+    """在括号深度 0 处找比较运算符（先长后短），返回 (op, 左, 右)。"""
+    depth = 0
+    ops = ("<>", "<=", ">=", "!=", "==", "<", ">")
+    for i, ch in enumerate(expr):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif depth == 0 and ch in "<>!=":
+            for op in ops:
+                if expr.startswith(op, i):
+                    return op, expr[:i], expr[i + len(op):]
+    return None
+
+
 def evaluate_checks(tpl_path: Path, filled_path: Path,
-                    sheets: Optional[List[str]] = None) -> List[str]:
+                    sheets: Optional[List[str]] = None):
     """评估模板数据表上的**条件格式**勾稽规则（用户自建，不平标红）。
 
     读取每个数据工作表的 expression 型条件格式，逐格实例化公式并求值：
@@ -1046,8 +1753,11 @@ def evaluate_checks(tpl_path: Path, filled_path: Path,
 
     sheets 指定时只评估这些工作表（本次实际填充的页）；缺省评估全部
     数据表——多页模板里其它页保留的是模板原值，通常不该一起判。
+    返回 (消息列表, 不平的页行号列表)：消息一行一条（\n 换行展示），
+    行号为 0 基（与 page.rows 对齐），供界面把整行标红。
     """
     out: List[str] = []
+    bad_rows: List[int] = []
     try:
         wb = load_workbook(Path(filled_path), data_only=False)
     except Exception:
@@ -1150,6 +1860,42 @@ def evaluate_checks(tpl_path: Path, filled_path: Path,
         # 顺序关键：先 <> 再单独 =，避免把 != 变成 !==
         expr = expr.replace("<>", "!=")
         expr = re.sub(r"(?<![<>!=])=(?!=)", "==", expr)
+        # 勾稽比较用 0.005 元容差：真实账目差异最小 0.01 元，而 double
+        # 求和尾差（15 位有效数字截断也未必吸收，实测 -7341906.1899…）
+        # 远小于它——按位对齐 Excel 语义时灵时不灵
+        mcmp = _top_cmp(expr)
+        if mcmp:
+            op, lhs, rhs = mcmp
+            a = _eval_formula("=" + lhs, sheet, depth + 1)
+            b = _eval_formula("=" + rhs, sheet, depth + 1)
+            try:
+                diff = float(a) - float(b)
+            except (TypeError, ValueError):
+                a, b = _x15(a), _x15(b)
+                diff = None
+            if diff is not None:
+                if op in ("<>", "!="):
+                    return abs(diff) > 0.005
+                if op in ("=", "=="):
+                    return abs(diff) <= 0.005
+                if op == "<=":
+                    return diff <= 0.005
+                if op == ">=":
+                    return diff >= -0.005
+                if op == "<":
+                    return diff < -0.005
+                return diff > 0.005
+            if op in ("<>", "!="):
+                return a != b
+            if op in ("=", "=="):
+                return a == b
+            if op == "<=":
+                return a <= b
+            if op == ">=":
+                return a >= b
+            if op == "<":
+                return a < b
+            return a > b
         expr = re.sub(r"(?i)\bSUM\(", "sumargs(", expr)
         expr = re.sub(r"(?i)\bMIN\(", "minargs(", expr)
         expr = re.sub(r"(?i)\bMAX\(", "maxargs(", expr)
@@ -1199,17 +1945,19 @@ def evaluate_checks(tpl_path: Path, filled_path: Path,
                                 if res is True:
                                     bad.append((rr, cc))
                     if bad:
-                        labels = []
-                        for (rr, _cc) in bad[:6]:
+                        bad_rows.extend(rr - 1 for (rr, _c) in bad)
+                        lines = ["%s 勾稽不平 %d 行（模板条件格式标红处，请核对）："
+                                 % (ws.title, len(bad))]
+                        for (rr, _cc) in bad[:10]:
                             code = ws.cell(row=rr, column=1).value
                             name = ws.cell(row=rr, column=2).value
                             tag = " ".join(str(x) for x in (code, name) if x)
-                            labels.append("第%d行" % rr
-                                          + ("[%s]" % tag if tag else ""))
-                        out.append("%s 勾稽不平 %d 行：%s%s（模板条件格式标红处，请核对）"
-                                   % (ws.title, len(bad), "；".join(labels),
-                                      "…" if len(bad) > 6 else ""))
+                            lines.append("  第%d行%s" % (rr,
+                                        ("[%s]" % tag) if tag else ""))
+                        if len(bad) > 10:
+                            lines.append("  … 其余 %d 行" % (len(bad) - 10))
+                        out.append("\n".join(lines))
                 except Exception:
                     continue
     wb.close()
-    return out
+    return out, sorted(set(bad_rows))
