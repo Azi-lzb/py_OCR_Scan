@@ -243,19 +243,20 @@ class WebApi:
             mode = self._picker_mode()
             if mode == "系统原生" and self._window is not None:
                 try:
-                    import webview
-                    paths = self._window.create_file_dialog(
-                        webview.OPEN_DIALOG,
-                        file_types=("Excel 工作簿 (*.xlsx;*.xlsm)",))
+                    paths = _sta_open_dialog(
+                        ("Excel 工作簿 (*.xlsx;*.xlsm)",), allow_multiple=False)
                     if isinstance(paths, (list, tuple)):
                         paths = paths[0] if paths else ""
                     path = str(paths) if paths else ""
                 except Exception as e:
-                    self._log(f"原生对话框不可用：{e}，回退 Tk")
-                    path = _tk_open_xlsx("选择文件")
-            elif mode == "Tk 对话框":
+                    self._log(f"原生对话框不可用：{e}")
+                    raise RuntimeError(
+                        f"原生文件对话框不可用（{e}）。"
+                        "可在设置页把「文件对话框」切换为「浏览器内置」") from e
+            elif mode == "Tk 对话框" or self._window is None:
                 path = _tk_open_xlsx("选择文件")
-            # 浏览器内置模式：无 path 可用即取消（前端应先走 upload_files）
+            else:
+                return self.state   # 浏览器内置：前端应先走 upload_files
             if not path:
                 return self.state
         self.state["dp"][which] = str(path)
@@ -1403,26 +1404,21 @@ class WebApi:
 
     def _dialog_open_images(self) -> List[str]:
         mode = self._picker_mode()
-        if mode == "Tk 对话框":
-            return _tk_open_images()
-        if self._window is not None:
+        if mode != "Tk 对话框" and self._window is not None:
+            # 描述里不能有 / 等非 \w 字符——pywebview parse_file_type 会拒绝
+            flt = ("图片或PDF (*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;"
+                   "*.webp;*.heic;*.heif;*.pdf)",)
             try:
-                import webview
-                flt = ("图片/PDF (*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;"
-                       "*.webp;*.heic;*.heif;*.pdf)",)
-                paths = self._window.create_file_dialog(
-                    webview.OPEN_DIALOG, allow_multiple=True, file_types=flt)
+                paths = _sta_open_dialog(flt, allow_multiple=True)
                 if isinstance(paths, str):
                     paths = [paths]
                 return [str(p) for p in (paths or [])]
             except Exception as e:
-                # 原生失败必须留痕：此前静默回退导致"点选择没反应"难排查
-                self._log(f"原生对话框不可用：{e}，回退 Tk")
-        try:
-            return _tk_open_images()
-        except Exception as e:
-            raise RuntimeError(f"文件对话框不可用（{e}）。"
-                               "可在设置页把「文件对话框」切换为其他模式") from e
+                self._log(f"原生对话框不可用：{e}")
+                raise RuntimeError(
+                    f"原生文件对话框不可用（{e}）。"
+                    "可在设置页把「文件对话框」切换为「浏览器内置」") from e
+        return _tk_open_images()
 
     def upload_files(self, items: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """浏览器内置模式：前端读文件转 base64 提交，落盘 data/uploads/ 返回路径。"""
@@ -1462,31 +1458,22 @@ class WebApi:
 
     def _dialog_save_file(self, default_name: str, kind: str = "xlsx",
                           initialdir: str = "") -> str:
-        flt, _ext, tk_ft = self._SAVE_KINDS.get(kind, self._SAVE_KINDS["xlsx"])
+        _flt, _ext, tk_ft = self._SAVE_KINDS.get(kind, self._SAVE_KINDS["xlsx"])
         mode = self._picker_mode()
-        if mode == "Tk 对话框":
+        if mode == "Tk 对话框" or self._window is None:
             return _tk_save_file(default_name, tk_ft, initialdir=initialdir)
-        if mode == "浏览器内置" or self._window is None:
+        if mode == "浏览器内置":
             # 浏览器内置模式不弹窗：落到导出目录用默认名（路径会回显给用户）
             self._exports_dir.mkdir(parents=True, exist_ok=True)
             return str(self._exports_dir / default_name)
+        flt, _e2, _e3 = self._SAVE_KINDS.get(kind, self._SAVE_KINDS["xlsx"])
         try:
-            import webview
-            kw = {"save_filename": default_name, "file_types": (flt,)}
-            if initialdir:
-                kw["directory"] = str(initialdir)
-            paths = self._window.create_file_dialog(webview.SAVE_DIALOG, **kw)
-            # pywebview 部分平台 SAVE_DIALOG 返回单元素 list/tuple 而非字符串
-            if isinstance(paths, (list, tuple)):
-                paths = paths[0] if paths else ""
-            return str(paths) if paths else ""
+            return _sta_save_dialog(default_name, flt, directory=str(initialdir))
         except Exception as e:
-            self._log(f"原生保存对话框不可用：{e}，回退 Tk")
-        try:
-            return _tk_save_file(default_name, tk_ft, initialdir=initialdir)
-        except Exception as e:
-            raise RuntimeError(f"保存对话框不可用（{e}）。"
-                               "可在设置页把「文件对话框」切换为其他模式") from e
+            self._log(f"原生保存对话框不可用：{e}")
+            raise RuntimeError(
+                f"原生保存对话框不可用（{e}）。"
+                "可在设置页把「文件对话框」切换为「浏览器内置」") from e
 
     # ------------------------------------------------------------------ #
     def _log(self, text: str, detail: bool = False) -> None:
@@ -1507,8 +1494,73 @@ class WebApi:
 
 
 # ---------------------------------------------------------------------- #
-# Tk 对话框（Flask 外壳 / 无 pywebview 窗口时使用）
+# 原生 WinForms 对话框（专用 STA 线程；桌面壳使用）
 # ---------------------------------------------------------------------- #
+def _sta_open_dialog(file_types: tuple, allow_multiple: bool,
+                     directory: str = "") -> Optional[tuple]:
+    """OpenFileDialog 跑在专用 STA 线程上（冻结态 js 线程是 MTA，
+    直调 ShowDialog 会死锁；Form.Invoke 封送在部分环境同样异常）。"""
+    from System.Threading import ApartmentState, Thread, ThreadStart
+    import System.Windows.Forms as WinForms
+    from webview.util import parse_file_type
+    box: Dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            d = WinForms.OpenFileDialog()
+            d.Multiselect = allow_multiple
+            d.InitialDirectory = directory or os.environ.get("HOMEPATH", "")
+            if file_types:
+                d.Filter = "|".join("{0} ({1})|{1}".format(*parse_file_type(f))
+                                    for f in file_types)
+            d.RestoreDirectory = True
+            if d.ShowDialog() == WinForms.DialogResult.OK:
+                box["v"] = tuple(d.FileNames)
+            else:
+                box["v"] = None
+        except Exception as e:
+            box["e"] = e
+
+    t = Thread(ThreadStart(run))
+    t.SetApartmentState(ApartmentState.STA)
+    t.Start()
+    t.Join()
+    if "e" in box:
+        raise box["e"]
+    return box.get("v")
+
+
+def _sta_save_dialog(default_name: str, flt: str,
+                     directory: str = "") -> str:
+    """SaveFileDialog 跑在专用 STA 线程上（口径同 _sta_open_dialog）。"""
+    from System.Threading import ApartmentState, Thread, ThreadStart
+    import System.Windows.Forms as WinForms
+    box: Dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            d = WinForms.SaveFileDialog()
+            d.InitialDirectory = directory or os.environ.get("HOMEPATH", "")
+            d.FileName = default_name
+            if flt:
+                d.Filter = flt
+            d.RestoreDirectory = True
+            if d.ShowDialog() == WinForms.DialogResult.OK:
+                box["v"] = str(d.FileName)
+            else:
+                box["v"] = ""
+        except Exception as e:
+            box["e"] = e
+
+    t = Thread(ThreadStart(run))
+    t.SetApartmentState(ApartmentState.STA)
+    t.Start()
+    t.Join()
+    if "e" in box:
+        raise box["e"]
+    return box.get("v", "")
+
+
 def _tk_open_images() -> List[str]:
     def run():
         import tkinter as tk
