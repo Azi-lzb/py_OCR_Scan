@@ -49,6 +49,7 @@ def build() -> int:
     onefile = "--onefile" in sys.argv
     args = [
         "--onedir" if not onefile else "--onefile", "--noconsole", "--clean",
+        "--noconfirm",                   # 覆盖旧 dist 不询问，一路打到底
         "--name", NAME,
         "--paths", str(CORE / "src"),
         # 冻结态前端页面从 _MEIPASS/web/index.html 读取

@@ -45,7 +45,7 @@ def seed_data(app_dir: Path) -> None:
 
 def build() -> int:
     args = [
-        "--onedir", "--clean",           # Flask 壳保留控制台便于看服务状态
+        "--onedir", "--clean", "--noconfirm",  # 覆盖旧 dist 不询问；Flask 壳保留控制台便于看服务状态
         "--name", NAME,
         "--paths", str(CORE / "src"),
         # 冻结态前端页面从 _MEIPASS/web/index.html 读取

@@ -27,7 +27,8 @@
 
 ## 打包（双壳 onedir，当前 380.0 / 377.9 MB）
 
-- `shell-pywebview/build_exe.py`、`shell-flask/build_exe.py`：PyInstaller onedir，`--noconsole`（flask 保留控制台）。
+- `shell-pywebview/build_exe.py`、`shell-flask/build_exe.py`：PyInstaller onedir，`--noconsole`（flask 保留控制台）、
+  **`--clean --noconfirm`（覆盖旧 dist 一路打到底，不询问）**。
 - 必带：`--collect-all webview/rapidocr_onnxruntime/rapid_table/pypdfium2/pillow_heif`、
   `--hidden-import webview.platforms.edgechromium`、**`--hidden-import tkinter`（两个壳都要，
   剔了它 Tk 回退路径会报 module not found）**。
