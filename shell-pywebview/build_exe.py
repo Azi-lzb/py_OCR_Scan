@@ -63,6 +63,10 @@ def build() -> int:
         "--collect-all", "xlrd",
         # 会计补录另存 *_已补录* .xls 副本
         "--collect-all", "xlwt",
+        # 批量格式转换 COM（Excel/WPS/Word 引擎）
+        "--collect-all", "win32com",
+        "--collect-all", "pythoncom",
+        "--collect-all", "pywintypes",
         # 无框线表格模型（SLANet-Plus）与 PDF 渲染引擎
         "--collect-all", "rapid_table",
         "--collect-all", "pypdfium2",
@@ -84,15 +88,6 @@ def build() -> int:
         "--exclude-module", "webview.platforms.qt",
         "--exclude-module", "pytest", "--exclude-module", "unittest",
         "--exclude-module", "pydoc", "--exclude-module", "doctest",
-        # 本工具不做 COM/Excel 自动化，剔除 pywin32 全家
-        "--exclude-module", "win32com",
-        "--exclude-module", "pythoncom",
-        "--exclude-module", "pywintypes",
-        "--exclude-module", "win32api",
-        "--exclude-module", "win32clipboard",
-        "--exclude-module", "win32con",
-        "--exclude-module", "win32print",
-        "--exclude-module", "pywin32",
         "--distpath", str(ROOT / "dist"),
         "--workpath", str(ROOT / "build"),
         "--specpath", str(ROOT / "build"),

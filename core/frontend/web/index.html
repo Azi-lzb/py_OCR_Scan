@@ -566,7 +566,8 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
       </div>
     </div>
     <button type="button" class="tab-btn" data-page="scan" title="拍照图片 → 扫描件：自动转正、透视拉平、去阴影增白；彩色增强/黑白/灰度，可导出 JPG/PDF">扫描王</button>
-    <button type="button" class="tab-btn" data-page="dp" title="数据处理：把 OCR 导出结果汇总成长表 / 按国库模板直填">数据处理</button>
+    <button type="button" class="tab-btn" data-page="dp" title="数据处理：宽表汇总 / 国库归集校验 / 会计补录校验">数据处理</button>
+    <button type="button" class="tab-btn" data-page="tools" title="工具：批量转换 xls/xlsx/xlsm、doc/docx 格式">工具</button>
     <button type="button" class="tab-btn" data-page="settings" title="外观与识别引擎设置">设置</button>
   </nav>
   <span class="spacer"></span>
@@ -687,6 +688,36 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
       <div class="gen-row" id="rowExpAc" style="display:none"><div class="gen-row-name">会计数据补录校验</div><div class="gen-row-desc">录入系统前的数据处理：惠州市会计表 5 个费用指标（11367~11370、11631）全 0 时，从费用余额表按「补录映射」补录并联动父项，另存 *_已补录* 副本；随后与国库同口径归集校验进会计时序表。</div></div>
       <div class="gen-row"><div class="gen-row-name" id="dpResultName">汇总结果</div><div class="gen-row-desc" id="dpResult">—</div></div>
       <div class="gen-row" id="rowTarget"><div class="gen-row-name">写入目标</div><div class="gen-row-desc" id="dpTarget">—</div></div>
+    </div>
+  </div>
+</section>
+<section id="page-tools" class="page">
+  <div class="page-actions">
+    <button id="btnTlExcelPick" class="btn">选择表格文件</button>
+    <select id="tlExcelFmt" class="gen-select" style="min-width:90px">
+      <option value="xlsx">转 xlsx</option><option value="xlsm">转 xlsm</option>
+      <option value="xls">转 xls</option><option value="csv">转 csv</option>
+    </select>
+    <button id="btnTlExcelRun" class="btn primary" disabled>批量转 Excel</button>
+    <span class="spacer"></span>
+    <button id="btnTlWordPick" class="btn">选择文档文件</button>
+    <select id="tlWordFmt" class="gen-select" style="min-width:90px">
+      <option value="docx">转 docx</option><option value="doc">转 doc</option>
+    </select>
+    <button id="btnTlWordRun" class="btn primary" disabled>批量转 Word</button>
+  </div>
+  <div class="dp-body">
+    <div class="gen-card" style="width:100%">
+      <div class="gen-card-title">批量转 Excel 格式</div>
+      <div class="gen-row"><div class="gen-row-name">表格文件</div><div class="gen-row-desc" id="tlExcelFiles">—</div></div>
+      <div class="gen-row"><div class="gen-row-name">说明</div><div class="gen-row-desc">支持 xls / xlsx / xlsm / csv / et 互转，输出到各源文件所在目录的「目标格式」子文件夹；同名自动加 _1/_2。由本机 Excel 或 WPS 原生转换，公式与格式完整保留。</div></div>
+      <div class="gen-row"><div class="gen-row-name">转换结果</div><div class="gen-row-desc" id="tlExcelResult">—</div></div>
+    </div>
+    <div class="gen-card" style="width:100%">
+      <div class="gen-card-title">批量转 Word 格式</div>
+      <div class="gen-row"><div class="gen-row-name">文档文件</div><div class="gen-row-desc" id="tlWordFiles">—</div></div>
+      <div class="gen-row"><div class="gen-row-name">说明</div><div class="gen-row-desc">doc ↔ docx 批量互转，引擎自动择优（MS Word / WPS 文字），输出规则同上。</div></div>
+      <div class="gen-row"><div class="gen-row-name">转换结果</div><div class="gen-row-desc" id="tlWordResult">—</div></div>
     </div>
   </div>
 </section>
@@ -899,6 +930,7 @@ function switchPage(name){
   if(name === "summary") fetchSummary();
   if(name === "scan") renderScanPage();
   if(name === "dp") renderDp();
+  if(name === "tools") renderTools();
   syncNav(name);
 }
 function syncNav(name){
@@ -1772,6 +1804,59 @@ function renderDp(){
   });
 })();
 
+/* ================= 工具页：批量格式转换 ================= */
+function renderTools(){
+  var tl = S.tool || {};
+  ["excel", "word"].forEach(function(kind){
+    var files = tl[kind + "_files"] || [];
+    $(kind === "excel" ? "tlExcelFiles" : "tlWordFiles").innerHTML = files.length
+      ? files.length + " 个文件，首个：" + plink(files[0])
+      : "未选择（点击上方「选择文件」可多选）";
+  });
+  var ef = $("tlExcelFmt"), wf = $("tlWordFmt");
+  if(document.activeElement !== ef) ef.value = tl.excel_fmt || "xlsx";
+  if(document.activeElement !== wf) wf.value = tl.word_fmt || "docx";
+  $("btnTlExcelRun").disabled = S.busy || !(tl.excel_files || []).length;
+  $("btnTlWordRun").disabled = S.busy || !(tl.word_files || []).length;
+}
+(function initTools(){
+  $("btnTlExcelPick").addEventListener("click", function(){
+    if(S.file_picker_mode === "浏览器内置"){ browserPick("tool-excel"); return; }
+    api("tool_pick_files", "excel").then(function(st){ S = st; renderTools(); })
+      .catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  $("btnTlWordPick").addEventListener("click", function(){
+    if(S.file_picker_mode === "浏览器内置"){ browserPick("tool-word"); return; }
+    api("tool_pick_files", "word").then(function(st){ S = st; renderTools(); })
+      .catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  $("tlExcelFmt").addEventListener("change", function(){
+    api("tool_set_format", "excel", $("tlExcelFmt").value).then(function(st){ S = st; })
+      .catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  $("tlWordFmt").addEventListener("change", function(){
+    api("tool_set_format", "word", $("tlWordFmt").value).then(function(st){ S = st; })
+      .catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  function convert(kind, fmtSel, resId, label){
+    toast("转换中…");
+    api("tool_convert", kind).then(function(res){
+      var lines = [];
+      (res.done || []).forEach(function(d){ lines.push("✓ " + esc(d.out)); });
+      (res.skipped || []).forEach(function(s){ lines.push("✗ " + esc(s.src) + "（" + esc(s.reason) + "）"); });
+      $(resId).innerHTML = "成功 " + res.ok + "、跳过 " + res.skip
+        + "（引擎 " + esc(res.engine || "-") + "）<br>" + lines.join("<br>");
+      toast(label + "完成：成功 " + res.ok, res.ok > 0 ? "ok" : "err");
+    }).catch(function(e){ toast(e.message || String(e), "err"); });
+  }
+  $("btnTlExcelRun").addEventListener("click", function(){
+    convert("excel", "tlExcelFmt", "tlExcelResult", "批量转 Excel");
+  });
+  $("btnTlWordRun").addEventListener("click", function(){
+    convert("word", "tlWordFmt", "tlWordResult", "批量转 Word");
+  });
+})();
+
 /* ================= 结果表（可编辑） ================= */
 function renderInfo(){
   /* 识别信息详情卡：随当前照片更新，显示在「OCR识别结果」页底部 */
@@ -2101,7 +2186,9 @@ var PICK_SPEC = {
   "dp-source":   { multi: false, accept: ".xlsx,.xlsm" },
   "dp-ts":       { multi: false, accept: ".xlsx,.xlsm" },
   "dp-fee":      { multi: false, accept: ".xls,.xlsx,.xlsm" },
-  "dp-sources":  { multi: true,  accept: ".xls,.xlsx,.xlsm" }
+  "dp-sources":  { multi: true,  accept: ".xls,.xlsx,.xlsm" },
+  "tool-excel":  { multi: true,  accept: ".xls,.xlsx,.xlsm,.csv,.et" },
+  "tool-word":   { multi: true,  accept: ".doc,.docx" }
 };
 function browserPick(kind){
   var spec = PICK_SPEC[kind] || { multi: false, accept: "" };
@@ -2144,6 +2231,10 @@ function submitUpload(kind, items){
       return api("dp_set_paths", "fee", ps[0]).then(function(st){ S = st; renderDp(); toast("已选择费用余额表", "ok"); });
     if(kind === "dp-sources")
       return api("dp_set_paths", "sources", "", ps).then(function(st){ S = st; renderDp(); toast("已添加 " + ps.length + " 个源文件", "ok"); });
+    if(kind === "tool-excel" || kind === "tool-word"){
+      var k = (kind === "tool-excel") ? "excel" : "word";
+      return api("tool_set_files", k, ps).then(function(st){ S = st; renderTools(); toast("已添加 " + ps.length + " 个文件", "ok"); });
+    }
     var target = (kind === "images-scan") ? "scan" : "ocr";
     return api("add_image_paths", ps, target).then(function(n){
       toast("已添加 " + n + " 个文件", "ok");

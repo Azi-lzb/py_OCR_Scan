@@ -61,6 +61,19 @@ class TkRunner:
 
 
 _TK = TkRunner()
+_COM = TkRunner()
+
+
+def _com_call(fn):
+    """在 COM 专用线程执行并 CoInitialize（COM 不允许跨线程直呼）。"""
+    def wrapped():
+        import pythoncom
+        pythoncom.CoInitialize()
+        try:
+            return fn()
+        finally:
+            pythoncom.CoUninitialize()
+    return _COM.run(wrapped)
 
 
 class WebApi:
@@ -88,6 +101,8 @@ class WebApi:
             "dp_mode": "宽表汇总",     # 数据处理类型：宽表汇总/国库数据校验归集/会计数据补录校验
             "ts": {"timeseries": "", "sources": []},   # 国库归集：时序表 + 多个源文件
             "ac": {"timeseries": "", "fee": "", "sources": []},  # 会计补录归集
+            "tool": {"excel_files": [], "word_files": [],
+                     "excel_fmt": "xlsx", "word_fmt": "docx"},  # 工具页批量转换
             "template_auto": True,     # 自动匹配模板（设置可关：只用每图手动指定的 sheet）
             "auto_rotate": True,       # 自动纠正页面方向（设置可关：照片已摆正时省数秒/张）
             "log": [],
@@ -1421,6 +1436,7 @@ class WebApi:
             "宽表汇总": {"source": self.state["dp"].get("source", "")},
             "国库数据校验归集": dict(self.state.get("ts") or {}),
             "会计数据补录校验": dict(self.state.get("ac") or {}),
+            "工具": dict(self.state.get("tool") or {}),
         }
         try:
             p = self.root / "data" / "config" / "last_paths.json"
@@ -1454,6 +1470,14 @@ class WebApi:
         if alive(ac.get("fee")):
             self.state["ac"]["fee"] = ac["fee"]
         self.state["ac"]["sources"] = [s for s in (ac.get("sources") or []) if alive(s)]
+        tool = data.get("工具") or {}
+        if isinstance(tool.get("excel_files"), list):
+            self.state["tool"]["excel_files"] = [s for s in tool["excel_files"] if alive(s)]
+        if isinstance(tool.get("word_files"), list):
+            self.state["tool"]["word_files"] = [s for s in tool["word_files"] if alive(s)]
+        for k in ("excel_fmt", "word_fmt"):
+            if tool.get(k):
+                self.state["tool"][k] = tool[k]
 
     def dp_set_paths(self, which: str, path: str,
                      sources: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -1600,6 +1624,84 @@ class WebApi:
         self._log(f"会计补录校验完成：补录 {res['backfilled']} 个文件，总分异常 "
                   f"{res['total_bad']}，不应有数 {res['no_data_bad']}")
         return {"ok": True, **res}
+
+    # ---- 工具页：批量格式转换 ----------------------------------------
+    TOOL_EXCEL_FMTS = ("xlsx", "xlsm", "xls", "csv")
+    TOOL_WORD_FMTS = ("docx", "doc")
+
+    def tool_set_files(self, kind: str, paths: List[str]) -> Dict[str, Any]:
+        """设置工具页文件列表（kind=excel/word）。"""
+        key = f"{kind}_files"
+        if key not in self.state["tool"]:
+            raise RuntimeError(f"未知工具文件类别：{kind}")
+        self.state["tool"][key] = [str(p) for p in paths if str(p).strip()]
+        self._save_last_paths()
+        self._log(f"工具页 {kind} 文件：{len(self.state['tool'][key])} 个")
+        return self.state
+
+    def tool_set_format(self, kind: str, fmt: str) -> Dict[str, Any]:
+        key = f"{kind}_fmt"
+        allowed = self.TOOL_EXCEL_FMTS if kind == "excel" else self.TOOL_WORD_FMTS
+        if key not in self.state["tool"] or fmt not in allowed:
+            raise RuntimeError(f"未知目标格式：{fmt}")
+        self.state["tool"][key] = fmt
+        self._save_last_paths()
+        return self.state
+
+    def tool_pick_files(self, kind: str) -> Dict[str, Any]:
+        """工具页：多选文件加入列表（桌面壳系统对话框 / 无窗口 Tk）。"""
+        if kind == "excel":
+            flt = ("Excel/表格文件 (*.xls;*.xlsx;*.xlsm;*.csv;*.et)",)
+        elif kind == "word":
+            flt = ("Word 文档 (*.doc;*.docx)",)
+        else:
+            raise RuntimeError(f"未知工具文件类别：{kind}")
+        paths: List[str] = []
+        if self._window is not None:
+            try:
+                paths = [str(p) for p in (_sta_open_dialog(flt, allow_multiple=True) or [])
+                         if str(p).strip()]
+            except Exception as e:
+                self._log(f"原生对话框不可用：{e}")
+                raise RuntimeError(
+                    f"原生文件对话框不可用（{e}）。"
+                    "可在设置页把「文件对话框」切换为「浏览器内置」") from e
+        else:
+            paths = _tk_open_data(f"选择要转换的{'表格' if kind == 'excel' else '文档'}",
+                                  multi=True)
+        if paths:
+            lst = self.state["tool"][f"{kind}_files"]
+            for p in paths:
+                if p not in lst:
+                    lst.append(p)
+            self._save_last_paths()
+            self._log(f"工具页 {kind} 文件 +{len(paths)}")
+        return self.state
+
+    def tool_convert(self, kind: str) -> Dict[str, Any]:
+        """批量转换（在 COM 专用线程执行，自动 CoInitialize）。"""
+        from .office_convert import run_excel_convert, run_word_convert
+        tool = self.state["tool"]
+        if kind == "excel":
+            files = [f for f in tool["excel_files"] if Path(f).is_file()]
+            fmt = tool["excel_fmt"]
+            if not files:
+                raise RuntimeError("请先选择要转换的表格文件")
+            self._log(f"批量转换 Excel → {fmt}：{len(files)} 个文件")
+            res = _com_call(lambda: run_excel_convert(files, fmt))
+        elif kind == "word":
+            files = [f for f in tool["word_files"] if Path(f).is_file()]
+            fmt = tool["word_fmt"]
+            if not files:
+                raise RuntimeError("请先选择要转换的文档")
+            self._log(f"批量转换 Word → {fmt}：{len(files)} 个文件")
+            res = _com_call(lambda: run_word_convert(files, fmt))
+        else:
+            raise RuntimeError(f"未知转换类别：{kind}")
+        self._save_last_paths()
+        self._log(f"转换完成：成功 {res['ok']}，跳过 {res['skip']}（引擎 {res['engine']}）")
+        res["ok"] = True
+        return res
 
     def set_file_picker_mode(self, mode: str) -> Dict[str, Any]:
         if mode in self.PICKER_MODES:
