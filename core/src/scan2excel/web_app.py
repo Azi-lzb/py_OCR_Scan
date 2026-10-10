@@ -85,6 +85,9 @@ class WebApi:
             "scan_done": 0,            # 已生成的张数（进度）
             "scan_images": [],         # 扫描王的照片列表（与 OCR 列表相互独立）
             "dp": {"source": "", "config": "", "template": ""},  # 数据处理页的文件选择
+            "dp_mode": "宽表汇总",     # 数据处理类型：宽表汇总/国库数据校验归集/会计数据补录校验
+            "ts": {"timeseries": "", "sources": []},   # 国库归集：时序表 + 多个源文件
+            "ac": {"timeseries": "", "fee": "", "sources": []},  # 会计补录归集
             "template_auto": True,     # 自动匹配模板（设置可关：只用每图手动指定的 sheet）
             "auto_rotate": True,       # 自动纠正页面方向（设置可关：照片已摆正时省数秒/张）
             "log": [],
@@ -111,6 +114,7 @@ class WebApi:
         self._cancel = threading.Event()
         self._window = None        # pywebview 窗口引用（attach_window 注入）
         self._log("程序启动")
+        self._restore_last_paths()
 
     # ------------------------------------------------------------------ #
     # 查询
@@ -1389,6 +1393,157 @@ class WebApi:
     # 文件对话框模式（设置页可选；参考 open-data-audit 的三模式 + 自动档）
     PICKER_MODES = ("自动", "系统原生", "Tk 对话框", "浏览器内置")
 
+    # ---- 数据处理：三模式 + 路径记忆 ----------------------------------
+    DP_MODES = ("宽表汇总", "国库数据校验归集", "会计数据补录校验")
+    _LAST_PATHS = None   # config/last_paths.json 的内容缓存
+
+    def set_dp_mode(self, mode: str) -> Dict[str, Any]:
+        if mode in self.DP_MODES:
+            self.state["dp_mode"] = mode
+            self._save_last_paths()
+            self._log("数据处理类型：" + mode)
+        return self.state
+
+    def _load_last_paths(self) -> Dict[str, Any]:
+        import json
+        p = self.root / "data" / "config" / "last_paths.json"
+        if self._LAST_PATHS is None:
+            try:
+                self._LAST_PATHS = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                self._LAST_PATHS = {}
+        return self._LAST_PATHS
+
+    def _save_last_paths(self) -> None:
+        import json
+        data = {
+            "dp_mode": self.state.get("dp_mode"),
+            "宽表汇总": {"source": self.state["dp"].get("source", "")},
+            "国库数据校验归集": dict(self.state.get("ts") or {}),
+            "会计数据补录校验": dict(self.state.get("ac") or {}),
+        }
+        try:
+            p = self.root / "data" / "config" / "last_paths.json"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                         encoding="utf-8")
+            self._LAST_PATHS = data
+        except Exception:
+            pass
+
+    def _restore_last_paths(self) -> None:
+        """启动时把上次的选择恢复到 state（文件不存在则忽略该项）。"""
+        import os
+        data = self._load_last_paths()
+        if data.get("dp_mode") in self.DP_MODES:
+            self.state["dp_mode"] = data["dp_mode"]
+        src = (data.get("宽表汇总") or {}).get("source", "")
+        if src and os.path.isfile(src):
+            self.state["dp"]["source"] = src
+
+        def alive(v: Any) -> bool:
+            return isinstance(v, str) and os.path.isfile(v)
+
+        ts = data.get("国库数据校验归集") or {}
+        if alive(ts.get("timeseries")):
+            self.state["ts"]["timeseries"] = ts["timeseries"]
+        self.state["ts"]["sources"] = [s for s in (ts.get("sources") or []) if alive(s)]
+        ac = data.get("会计数据补录校验") or {}
+        if alive(ac.get("timeseries")):
+            self.state["ac"]["timeseries"] = ac["timeseries"]
+        if alive(ac.get("fee")):
+            self.state["ac"]["fee"] = ac["fee"]
+        self.state["ac"]["sources"] = [s for s in (ac.get("sources") or []) if alive(s)]
+
+    def dp_set_paths(self, which: str, path: str,
+                     sources: Optional[List[str]] = None) -> Dict[str, Any]:
+        """国库/会计模式：显式设置 时序表(timeseries)/费用余额表(fee)/源文件列表(sources)。"""
+        mode = self.state.get("dp_mode")
+        if mode == "国库数据校验归集":
+            target = self.state["ts"]
+        elif mode == "会计数据补录校验":
+            target = self.state["ac"]
+        else:
+            raise RuntimeError("当前处理类型不支持该文件行")
+        if which == "sources":
+            if sources is not None:
+                target["sources"] = [str(s) for s in sources if str(s).strip()]
+            elif path:
+                target["sources"] = [path]
+        elif which in ("timeseries", "fee"):
+            target[which] = str(path)
+        else:
+            raise RuntimeError(f"未知文件行：{which}")
+        self._save_last_paths()
+        self._log(f"{mode}：已设置 {which} = {path or target.get(which)}")
+        return self.state
+
+    def dp_clear_sources(self) -> Dict[str, Any]:
+        """清空当前模式的源文件列表。"""
+        mode = self.state.get("dp_mode")
+        if mode == "国库数据校验归集":
+            self.state["ts"]["sources"] = []
+        elif mode == "会计数据补录校验":
+            self.state["ac"]["sources"] = []
+        self._save_last_paths()
+        return self.state
+
+    def dp_pick_file(self, kind: str) -> Dict[str, Any]:
+        """国库/会计模式：选择 时序表(timeseries)/费用余额表(fee)/源文件(sources，多选)。"""
+        mode = self.state.get("dp_mode")
+        if mode not in ("国库数据校验归集", "会计数据补录校验"):
+            raise RuntimeError("请先在数据处理页把「处理类型」切到国库或会计")
+        multi = kind == "sources"
+        flt = ("数据文件 (*.xls;*.xlsx;*.xlsm)",)
+        paths: List[str] = []
+        if self._window is not None:
+            try:
+                paths = [str(p) for p in (_sta_open_dialog(flt, allow_multiple=multi) or [])
+                         if str(p).strip()]
+            except Exception as e:
+                self._log(f"原生对话框不可用：{e}")
+                raise RuntimeError(
+                    f"原生文件对话框不可用（{e}）。"
+                    "可在设置页把「文件对话框」切换为「浏览器内置」") from e
+        else:
+            paths = _tk_open_data(multi=multi)
+        if not paths:
+            return self.state
+        target = self.state["ts" if mode == "国库数据校验归集" else "ac"]
+        if kind == "sources":
+            for p in paths:
+                if p not in target["sources"]:
+                    target["sources"].append(p)
+        elif kind == "timeseries":
+            target["timeseries"] = paths[0]
+        elif kind == "fee":
+            target["fee"] = paths[0]
+        self._save_last_paths()
+        self._log(f"{mode}：已选择 {kind}：{paths}")
+        return self.state
+
+    def ts_run(self) -> Dict[str, Any]:
+        """国库数据校验归集：源指标表归集进时序表 + 总分/不应有数校验。"""
+        from .timeseries import run_treasury
+        mode = self.state.get("dp_mode")
+        if mode != "国库数据校验归集":
+            raise RuntimeError("当前不是「国库数据校验归集」模式")
+        ts = self.state.get("ts") or {}
+        tp = ts.get("timeseries", "")
+        if not tp or not Path(tp).is_file():
+            raise RuntimeError("请先选择时序表")
+        sources = [s for s in (ts.get("sources") or []) if Path(s).is_file()]
+        if not sources:
+            raise RuntimeError("请先选择源文件（可多选）")
+        cfg = self._config_xlsx
+        if not cfg.is_file():
+            raise RuntimeError(f"未找到规则配置：{cfg}")
+        res = run_treasury(Path(tp), sources, cfg)
+        self._save_last_paths()
+        self._log(f"国库归集校验完成：{res['files']} 个源文件，写入 {res['cells']} 格，"
+                  f"总分异常 {res['total_bad']}，不应有数 {res['no_data_bad']}")
+        return {"ok": True, **res}
+
     def set_file_picker_mode(self, mode: str) -> Dict[str, Any]:
         if mode in self.PICKER_MODES:
             self.state["file_picker_mode"] = mode
@@ -1559,6 +1714,21 @@ def _sta_save_dialog(default_name: str, flt: str,
     if "e" in box:
         raise box["e"]
     return box.get("v", "")
+
+
+def _tk_open_data(title: str = "选择数据文件", multi: bool = False) -> List[str]:
+    def run():
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        paths = filedialog.askopenfilenames(
+            title=title,
+            filetypes=[("数据文件", "*.xls *.xlsx *.xlsm"), ("所有文件", "*.*")])
+        root.destroy()
+        return [str(p) for p in paths]
+    return _TK.run(run)
 
 
 def _tk_open_images() -> List[str]:

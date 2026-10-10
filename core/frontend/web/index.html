@@ -658,7 +658,15 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
 </section>
 <section id="page-dp" class="page">
   <div class="page-actions">
+    <select id="dpModeSel" class="gen-select" style="min-width:170px">
+      <option value="宽表汇总">宽表汇总</option>
+      <option value="国库数据校验归集">国库数据校验归集</option>
+      <option value="会计数据补录校验">会计数据补录校验</option>
+    </select>
     <button id="btnDpSource" class="btn">选择源文件</button>
+    <button id="btnDpTs" class="btn" style="display:none">选择时序表</button>
+    <button id="btnDpFee" class="btn" style="display:none">选择费用余额表</button>
+    <button id="btnDpSrcClear" class="btn" style="display:none">清空源文件</button>
     <span class="spacer"></span>
     <button id="btnDpRun" class="btn primary" disabled>宽表汇总</button>
   </div>
@@ -666,14 +674,18 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
     <div class="gen-card" style="width:100%">
       <div class="gen-card-title">文件</div>
       <div class="gen-row"><div class="gen-row-name">源文件</div><div class="gen-row-desc" id="dpSource">—</div></div>
-      <div class="gen-row"><div class="gen-row-name">规则配置</div><div class="gen-row-desc" id="dpConfig">—</div></div>
+      <div class="gen-row" id="rowTs" style="display:none"><div class="gen-row-name">时序表</div><div class="gen-row-desc" id="dpTs">—</div></div>
+      <div class="gen-row" id="rowFee" style="display:none"><div class="gen-row-name">费用余额表</div><div class="gen-row-desc" id="dpFee">—</div></div>
+      <div class="gen-row" id="rowCfg"><div class="gen-row-name">规则配置</div><div class="gen-row-desc" id="dpConfig">—</div></div>
       <div class="gen-row"><div class="gen-row-name">输出目录</div><div class="gen-row-desc" id="dpExports">—</div></div>
     </div>
     <div class="gen-card" style="width:100%">
       <div class="gen-card-title">说明</div>
-      <div class="gen-row"><div class="gen-row-name">宽表汇总</div><div class="gen-row-desc">按 config 规则把源文件所有 sheet 摊平成宽表（pytools 3.9.8 同款）：行=源数据行（行头取合并格锚点，中缝表头也各占一行），列=列头路径，直接可 SUMIFS 引用。</div></div>
-      <div class="gen-row"><div class="gen-row-name">汇总结果</div><div class="gen-row-desc" id="dpResult">—</div></div>
-      <div class="gen-row"><div class="gen-row-name">写入目标</div><div class="gen-row-desc" id="dpTarget">—</div></div>
+      <div class="gen-row" id="rowExpWide"><div class="gen-row-name">宽表汇总</div><div class="gen-row-desc">按 config 规则把源文件所有 sheet 摊平成宽表（pytools 3.9.8 同款）：行=源数据行（行头取合并格锚点，中缝表头也各占一行），列=列头路径，直接可 SUMIFS 引用。</div></div>
+      <div class="gen-row" id="rowExpTs" style="display:none"><div class="gen-row-name">国库数据校验归集</div><div class="gen-row-desc">把多份「YYYY.MM 地区名.xls」指标表（代码/名称/行序号/余额）按文件名归集进时序表（每地区一 sheet、行=指标、列=月份），随后做总分校验（市级 vs Σ县区）与不应有数校验（惠阳/博罗/龙门），结果写进时序表的「校验结果」sheet。规则（取数列/容差/地区/白名单）在 config.xlsx 的「归集配置/地区规则/白名单」可配。</div></div>
+      <div class="gen-row" id="rowExpAc" style="display:none"><div class="gen-row-name">会计数据补录校验</div><div class="gen-row-desc">录入系统前的数据处理：惠州市会计表 5 个费用指标（11367~11370、11631）全 0 时，从费用余额表按「补录映射」补录并联动父项，另存 *_已补录* 副本；随后与国库同口径归集校验进会计时序表。</div></div>
+      <div class="gen-row"><div class="gen-row-name" id="dpResultName">汇总结果</div><div class="gen-row-desc" id="dpResult">—</div></div>
+      <div class="gen-row" id="rowTarget"><div class="gen-row-name">写入目标</div><div class="gen-row-desc" id="dpTarget">—</div></div>
     </div>
   </div>
 </section>
@@ -1624,24 +1636,93 @@ function plink(p){
   return '<span class="plink" data-path="' + s + '">' + s + '</span>';
 }
 function renderDp(){
-  var dp = S.dp || {};
-  var cfg = dp.config || "";
+  var mode = S.dp_mode || "宽表汇总";
+  var sel = $("dpModeSel");
+  if(sel && document.activeElement !== sel) sel.value = mode;
+  var wide = mode === "宽表汇总";
+  var isTs = mode === "国库数据校验归集";
+  var isAc = mode === "会计数据补录校验";
+  var tsx = (isTs ? S.ts : S.ac) || {};
+  var cfg = (S.dp || {}).config || "";
   $("dpConfig").innerHTML = cfg ? plink(cfg) : "data/config/config.xlsx";
   var ex = S.exports_dir || "";
-  var src = dp.source || "";
-  $("dpSource").innerHTML = src ? plink(src) : "未选择（点击「选择源文件」）";
   $("dpExports").innerHTML = ex ? plink(ex) : "—";
-  $("btnDpRun").disabled = S.busy || !src;
+  $("rowTs").style.display = (isTs || isAc) ? "" : "none";
+  $("rowFee").style.display = isAc ? "" : "none";
+  $("rowExpWide").style.display = wide ? "" : "none";
+  $("rowExpTs").style.display = isTs ? "" : "none";
+  $("rowExpAc").style.display = isAc ? "" : "none";
+  $("btnDpTs").style.display = (isTs || isAc) ? "" : "none";
+  $("btnDpFee").style.display = isAc ? "" : "none";
+  $("btnDpSrcClear").style.display = (isTs || isAc) ? "" : "none";
+  $("dpResultName").textContent = wide ? "汇总结果" : "校验结果";
+  $("rowTarget").style.display = wide ? "" : "none";
+  var sources = tsx.sources || [];
+  if(wide){
+    var s = (S.dp || {}).source || "";
+    $("dpSource").innerHTML = s ? plink(s) : "未选择（点击「选择源文件」）";
+  } else {
+    $("dpSource").innerHTML = sources.length
+      ? sources.length + " 个文件，首个：" + plink(sources[0])
+      : "未选择（点击「选择源文件」可多选）";
+  }
+  $("dpTs").innerHTML = tsx.timeseries ? plink(tsx.timeseries) : "未选择";
+  if(isAc) $("dpFee").innerHTML = tsx.fee ? plink(tsx.fee) : "未选择";
+  $("btnDpRun").textContent = wide ? "宽表汇总" : (isTs ? "归集并校验" : "补录并校验");
+  var can = !S.busy && (wide ? !!((S.dp || {}).source)
+      : (isTs ? !!tsx.timeseries && sources.length > 0
+              : !!tsx.timeseries && !!tsx.fee && sources.length > 0));
+  $("btnDpRun").disabled = !can;
 }
 (function initDp(){
-  [["btnDpSource", "source"]].forEach(function(pair){
-    $(pair[0]).addEventListener("click", function(){
-      if(S.file_picker_mode === "浏览器内置"){ browserPick("dp-source"); return; }
-      api("dp_pick", pair[1]).then(function(st){ S = st; renderDp(); })
+  $("dpModeSel").addEventListener("change", function(){
+    api("set_dp_mode", $("dpModeSel").value).then(function(st){
+      S = st; renderDp();
+      toast("数据处理类型：" + $("dpModeSel").value, "ok");
+    }).catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  $("btnDpSource").addEventListener("click", function(){
+    if(S.dp_mode !== "宽表汇总"){
+      if(S.file_picker_mode === "浏览器内置"){ browserPick("dp-sources"); return; }
+      api("dp_pick_file", "sources").then(function(st){ S = st; renderDp(); })
         .catch(function(e){ toast(e.message || String(e), "err"); });
-    });
+      return;
+    }
+    if(S.file_picker_mode === "浏览器内置"){ browserPick("dp-source"); return; }
+    api("dp_pick", "source").then(function(st){ S = st; renderDp(); })
+      .catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  $("btnDpTs").addEventListener("click", function(){
+    if(S.file_picker_mode === "浏览器内置"){ browserPick("dp-ts"); return; }
+    api("dp_pick_file", "timeseries").then(function(st){ S = st; renderDp(); })
+      .catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  $("btnDpFee").addEventListener("click", function(){
+    if(S.file_picker_mode === "浏览器内置"){ browserPick("dp-fee"); return; }
+    api("dp_pick_file", "fee").then(function(st){ S = st; renderDp(); })
+      .catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  $("btnDpSrcClear").addEventListener("click", function(){
+    api("dp_clear_sources").then(function(st){ S = st; renderDp(); toast("源文件列表已清空", "ok"); })
+      .catch(function(e){ toast(e.message || String(e), "err"); });
   });
   $("btnDpRun").addEventListener("click", function(){
+    var mode = S.dp_mode || "宽表汇总";
+    if(mode === "国库数据校验归集"){
+      toast("归集校验中…");
+      api("ts_run").then(function(res){
+        $("dpResult").innerHTML = "归集 " + res.files + " 个源文件、写入 " + res.cells
+          + " 格；总分异常 " + res.total_bad + "、不应有数 " + res.no_data_bad
+          + " → " + plink(res.result_path);
+        toast("归集校验完成：" + (res.total_bad + res.no_data_bad) + " 条异常",
+              (res.total_bad + res.no_data_bad) > 0 ? "err" : "ok");
+      }).catch(function(e){ toast(e.message || String(e), "err"); });
+      return;
+    }
+    if(mode === "会计数据补录校验"){
+      toast("会计补录校验将在下一阶段提供", "err");
+      return;
+    }
     toast("宽表汇总中…");
     api("dp_run").then(function(res){
       $("dpResult").innerHTML = res.rows + " 行 x " + res.cols + " 列 → " + plink(res.path);
@@ -1987,13 +2068,20 @@ function poll(){
 }
 
 /* ================= 浏览器内置选文件（设置页「文件对话框」=浏览器内置 时用） ================= */
+var PICK_SPEC = {
+  "images-ocr":  { multi: true,  accept: ".png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp,.heic,.heif,.pdf" },
+  "images-scan": { multi: true,  accept: ".png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp,.heic,.heif,.pdf" },
+  "dp-source":   { multi: false, accept: ".xlsx,.xlsm" },
+  "dp-ts":       { multi: false, accept: ".xlsx,.xlsm" },
+  "dp-fee":      { multi: false, accept: ".xls,.xlsx,.xlsm" },
+  "dp-sources":  { multi: true,  accept: ".xls,.xlsx,.xlsm" }
+};
 function browserPick(kind){
+  var spec = PICK_SPEC[kind] || { multi: false, accept: "" };
   var inp = $("browserFile");
   inp.value = "";
-  inp.multiple = (kind !== "dp-source");
-  inp.accept = (kind === "dp-source")
-    ? ".xlsx,.xlsm"
-    : ".png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp,.heic,.heif,.pdf";
+  inp.multiple = spec.multi;
+  inp.accept = spec.accept;
   inp.dataset.kind = kind;
   inp.click();
 }
@@ -2021,11 +2109,14 @@ function submitUpload(kind, items){
   api("upload_files", items).then(function(res){
     var ps = res.paths || [];
     if(!ps.length){ toast("上传失败：没有有效文件", "err"); return; }
-    if(kind === "dp-source"){
-      return api("dp_pick", "source", ps[0]).then(function(st){
-        S = st; renderDp(); toast("已选择源文件", "ok");
-      });
-    }
+    if(kind === "dp-source")
+      return api("dp_pick", "source", ps[0]).then(function(st){ S = st; renderDp(); toast("已选择源文件", "ok"); });
+    if(kind === "dp-ts")
+      return api("dp_set_paths", "timeseries", ps[0]).then(function(st){ S = st; renderDp(); toast("已选择时序表", "ok"); });
+    if(kind === "dp-fee")
+      return api("dp_set_paths", "fee", ps[0]).then(function(st){ S = st; renderDp(); toast("已选择费用余额表", "ok"); });
+    if(kind === "dp-sources")
+      return api("dp_set_paths", "sources", "", ps).then(function(st){ S = st; renderDp(); toast("已添加 " + ps.length + " 个源文件", "ok"); });
     var target = (kind === "images-scan") ? "scan" : "ocr";
     return api("add_image_paths", ps, target).then(function(n){
       toast("已添加 " + n + " 个文件", "ok");

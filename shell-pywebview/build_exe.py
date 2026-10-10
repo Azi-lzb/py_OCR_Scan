@@ -59,6 +59,8 @@ def build() -> int:
         # RapidOCR 的 .onnx 模型在包内，必须随包收集
         "--collect-all", "rapidocr_onnxruntime",
         "--collect-all", "webview",
+        # 时序归集读 .xls 老格式（阶段一归集校验）
+        "--collect-all", "xlrd",
         # 无框线表格模型（SLANet-Plus）与 PDF 渲染引擎
         "--collect-all", "rapid_table",
         "--collect-all", "pypdfium2",
