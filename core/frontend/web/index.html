@@ -667,6 +667,7 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
     <button id="btnDpTs" class="btn" style="display:none">选择时序表</button>
     <button id="btnDpFee" class="btn" style="display:none">选择费用余额表</button>
     <button id="btnDpSrcClear" class="btn" style="display:none">清空源文件</button>
+    <button id="btnDpConfirm" class="btn primary" style="display:none">确认补录</button>
     <span class="spacer"></span>
     <button id="btnDpRun" class="btn primary" disabled>宽表汇总</button>
   </div>
@@ -1720,7 +1721,23 @@ function renderDp(){
       return;
     }
     if(mode === "会计数据补录校验"){
-      toast("会计补录校验将在下一阶段提供", "err");
+      toast("会计校验中…");
+      api("ac_run").then(function(res){
+        if(res.needs_confirm){
+          $("dpResult").innerHTML = "检测到 <b>惠州市</b> 会计表 5 个费用指标全 0（"
+            + (res.preview.sources || []).length + " 个文件）——可从费用余额表补录并联动父项，"
+            + "源文件会另存 *_已补录* 副本。核对无误请点「确认补录」。";
+          $("btnDpConfirm").style.display = "";
+          toast("检测到可补录数据，请确认", "err");
+        } else {
+          $("btnDpConfirm").style.display = "none";
+          $("dpResult").innerHTML = "归集 " + res.files + " 个源文件、写入 " + res.cells
+            + " 格；总分异常 " + res.total_bad + "、不应有数 " + res.no_data_bad
+            + " → " + plink(res.result_path);
+          toast("会计校验完成：" + (res.total_bad + res.no_data_bad) + " 条异常",
+                (res.total_bad + res.no_data_bad) > 0 ? "err" : "ok");
+        }
+      }).catch(function(e){ toast(e.message || String(e), "err"); });
       return;
     }
     toast("宽表汇总中…");
@@ -1733,6 +1750,16 @@ function renderDp(){
         return p + "新增 " + x.added + " 行（输入 " + x.input + "）";
       }).join("<br>") || "未配置目标写入";
       toast("宽表汇总完成：" + res.rows + " 行", "ok");
+    }).catch(function(e){ toast(e.message || String(e), "err"); });
+  });
+  $("btnDpConfirm").addEventListener("click", function(){
+    toast("补录并校验中…");
+    api("ac_confirm").then(function(res){
+      $("btnDpConfirm").style.display = "none";
+      $("dpResult").innerHTML = "已补录 " + res.backfilled + " 个惠州市文件（另存 *_已补录* 副本 "
+        + res.copies.length + " 份）；归集 " + res.files + " 个源文件；总分异常 "
+        + res.total_bad + "、不应有数 " + res.no_data_bad + " → " + plink(res.result_path);
+      toast("补录校验完成", "ok");
     }).catch(function(e){ toast(e.message || String(e), "err"); });
   });
   /* 路径超链接：点击用系统程序打开（文件/文件夹） */

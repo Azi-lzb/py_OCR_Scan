@@ -1544,6 +1544,63 @@ class WebApi:
                   f"总分异常 {res['total_bad']}，不应有数 {res['no_data_bad']}")
         return {"ok": True, **res}
 
+    def _ac_inputs(self) -> tuple:
+        """会计模式输入校验，返回 (时序表, 费用余额表, 源文件列表)。"""
+        if self.state.get("dp_mode") != "会计数据补录校验":
+            raise RuntimeError("当前不是「会计数据补录校验」模式")
+        ac = self.state.get("ac") or {}
+        tp = ac.get("timeseries", "")
+        if not tp or not Path(tp).is_file():
+            raise RuntimeError("请先选择时序表")
+        fee = ac.get("fee", "")
+        if not fee or not Path(fee).is_file():
+            raise RuntimeError("请先选择费用余额表")
+        sources = [s for s in (ac.get("sources") or []) if Path(s).is_file()]
+        if not sources:
+            raise RuntimeError("请先选择源文件（可多选）")
+        cfg = self._config_xlsx
+        if not cfg.is_file():
+            raise RuntimeError(f"未找到规则配置：{cfg}")
+        return Path(tp), Path(fee), sources, cfg
+
+    def ac_run(self) -> Dict[str, Any]:
+        """会计链路第一步：检测惠州市费用指标是否需要补录。
+        需要补录 → 返回预览待前端确认（不写任何数据）；
+        不需要 → 直接归集校验并返回统计。"""
+        from .timeseries import (run_accounting, parse_file_name,
+                                 read_source_table, load_config, _needs_adjustment)
+        tp, fee, sources, cfg = self._ac_inputs()
+        _cfg = load_config(cfg)
+        regions, base, vcol = _cfg["regions"], _cfg["base_region"], _cfg["value_col"]
+        pending = []
+        for s in sources:
+            info = parse_file_name(Path(s).name, regions)
+            if info["region"] == base and _needs_adjustment(read_source_table(Path(s), vcol)):
+                pending.append(s)
+        if pending:
+            self._ac_pending = pending
+            preview = {"sources": pending, "fee": fee, "note":
+                       "检测到惠州市会计表 5 个费用指标（11367~11370、11631）全 0，"
+                       "可从费用余额表补录并联动父项；源文件将另存 *_已补录* 副本。"}
+            self._log(f"会计补录：{len(pending)} 个惠州市文件可补录，待确认")
+            return {"ok": True, "needs_confirm": True, "preview": preview}
+        self._ac_pending = []
+        return self._ac_finish()
+
+    def ac_confirm(self) -> Dict[str, Any]:
+        """会计链路第二步：用户确认后执行补录 + 归集校验。"""
+        from .timeseries import run_accounting
+        tp, fee, sources, cfg = self._ac_inputs()
+        pending = getattr(self, "_ac_pending", None)
+        if not pending:
+            raise RuntimeError("没有待确认的补录（请先执行一次校验）")
+        res = run_accounting(tp, sources, cfg, fee, do_backfill=True)
+        self._ac_pending = []
+        self._save_last_paths()
+        self._log(f"会计补录校验完成：补录 {res['backfilled']} 个文件，总分异常 "
+                  f"{res['total_bad']}，不应有数 {res['no_data_bad']}")
+        return {"ok": True, **res}
+
     def set_file_picker_mode(self, mode: str) -> Dict[str, Any]:
         if mode in self.PICKER_MODES:
             self.state["file_picker_mode"] = mode

@@ -61,6 +61,8 @@ def build() -> int:
         "--collect-all", "webview",
         # 时序归集读 .xls 老格式（阶段一归集校验）
         "--collect-all", "xlrd",
+        # 会计补录另存 *_已补录* .xls 副本
+        "--collect-all", "xlwt",
         # 无框线表格模型（SLANet-Plus）与 PDF 渲染引擎
         "--collect-all", "rapid_table",
         "--collect-all", "pypdfium2",
