@@ -80,6 +80,7 @@ class WebApi:
             "high_accuracy": False,    # 高精度识别档（server rec 模型）
             "templates": [],           # 月计表模板名列表
             "scan_mode": "enhanced",   # 扫描件输出模式（enhanced/bw/gray/origin）
+            "file_picker_mode": "自动",  # 文件对话框：自动/系统原生/Tk 对话框/浏览器内置
             "scan_busy": False,        # 扫描件生成中
             "scan_done": 0,            # 已生成的张数（进度）
             "scan_images": [],         # 扫描王的照片列表（与 OCR 列表相互独立）
@@ -233,25 +234,32 @@ class WebApi:
         self._log(f"已导出扫描件 PDF（{len(imgs)} 页）：{out}")
         return {"ok": True, "path": str(out), "count": len(imgs)}
 
-    def dp_pick(self, which: str = "source") -> Dict[str, Any]:
-        """数据处理页：选择 源文件/规则配置/国库模板。"""
-        if self._window is not None:
-            try:
-                import webview
-                paths = self._window.create_file_dialog(
-                    webview.OPEN_DIALOG,
-                    file_types=("Excel 工作簿 (*.xlsx;*.xlsm)",))
-                if isinstance(paths, (list, tuple)):
-                    paths = paths[0] if paths else ""
-                path = str(paths) if paths else ""
-            except Exception:
-                path = ""
-        else:
-            path = _tk_open_xlsx("选择文件",
-                                 initialdir=str(self._templates_dir.parent))
-        if path:
-            self.state["dp"][which] = path
-            self._log(f"数据处理：已选择{ {'source': '源文件', 'config': '规则配置', 'template': '国库模板', 'target': '目标文件'}.get(which, which)}：{path}")
+    def dp_pick(self, which: str = "source", path: str = "") -> Dict[str, Any]:
+        """数据处理页：选择 源文件/规则配置/国库模板。
+
+        显式 path（浏览器内置模式上传落盘后）直接采用；否则按对话框模式弹窗。
+        """
+        if not path:
+            mode = self._picker_mode()
+            if mode == "系统原生" and self._window is not None:
+                try:
+                    import webview
+                    paths = self._window.create_file_dialog(
+                        webview.OPEN_DIALOG,
+                        file_types=("Excel 工作簿 (*.xlsx;*.xlsm)",))
+                    if isinstance(paths, (list, tuple)):
+                        paths = paths[0] if paths else ""
+                    path = str(paths) if paths else ""
+                except Exception as e:
+                    self._log(f"原生对话框不可用：{e}，回退 Tk")
+                    path = _tk_open_xlsx("选择文件")
+            elif mode == "Tk 对话框":
+                path = _tk_open_xlsx("选择文件")
+            # 浏览器内置模式：无 path 可用即取消（前端应先走 upload_files）
+            if not path:
+                return self.state
+        self.state["dp"][which] = str(path)
+        self._log(f"数据处理：已选择{ {'source': '源文件', 'config': '规则配置', 'template': '国库模板', 'target': '目标文件'}.get(which, which)}：{path}")
         return self.state
 
     def dp_run(self) -> Dict[str, Any]:
@@ -743,9 +751,11 @@ class WebApi:
         return (self.state["scan_images"] if target == "scan"
                 else self.state["images"])
 
-    def choose_images(self, target: str = "ocr") -> int:
-        """系统对话框选照片（可多选），追加进对应列表。"""
-        paths = self._dialog_open_images()
+    def choose_images(self, target: str = "ocr",
+                      paths: Optional[List[str]] = None) -> int:
+        """选照片追加进对应列表：显式路径（浏览器上传）优先，否则弹对话框。"""
+        if not paths:
+            paths = self._dialog_open_images()
         return self.add_image_paths(paths, target=target)
 
     def add_image_paths(self, paths: Optional[List[str]],
@@ -1375,7 +1385,26 @@ class WebApi:
     def attach_window(self, window) -> None:
         self._window = window
 
+    # 文件对话框模式（设置页可选；参考 open-data-audit 的三模式 + 自动档）
+    PICKER_MODES = ("自动", "系统原生", "Tk 对话框", "浏览器内置")
+
+    def set_file_picker_mode(self, mode: str) -> Dict[str, Any]:
+        if mode in self.PICKER_MODES:
+            self.state["file_picker_mode"] = mode
+            self._log("文件对话框模式：" + mode)
+        return self.state
+
+    def _picker_mode(self) -> str:
+        """解析生效模式：自动 = 有 pywebview 窗口用原生，否则 Tk。"""
+        mode = str(self.state.get("file_picker_mode") or "自动")
+        if mode not in self.PICKER_MODES or mode == "自动":
+            return "系统原生" if self._window is not None else "Tk 对话框"
+        return mode
+
     def _dialog_open_images(self) -> List[str]:
+        mode = self._picker_mode()
+        if mode == "Tk 对话框":
+            return _tk_open_images()
         if self._window is not None:
             try:
                 import webview
@@ -1386,13 +1415,40 @@ class WebApi:
                 if isinstance(paths, str):
                     paths = [paths]
                 return [str(p) for p in (paths or [])]
-            except Exception:
-                pass  # 回退 Tk
+            except Exception as e:
+                # 原生失败必须留痕：此前静默回退导致"点选择没反应"难排查
+                self._log(f"原生对话框不可用：{e}，回退 Tk")
         try:
             return _tk_open_images()
         except Exception as e:
             raise RuntimeError(f"文件对话框不可用（{e}）。"
-                               "请重试；若持续出现请截图日志反馈") from e
+                               "可在设置页把「文件对话框」切换为其他模式") from e
+
+    def upload_files(self, items: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+        """浏览器内置模式：前端读文件转 base64 提交，落盘 data/uploads/ 返回路径。"""
+        if not items:
+            return {"ok": False, "paths": []}
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        updir = self.root / "data" / "uploads" / stamp
+        updir.mkdir(parents=True, exist_ok=True)
+        import base64
+        paths: List[str] = []
+        for i, it in enumerate(items):
+            name = Path(str(it.get("name") or f"文件{i}")).name or f"文件{i}"
+            raw = it.get("data") or ""
+            if raw.startswith("data:") and "," in raw:   # 剥掉 data URL 前缀
+                raw = raw.split(",", 1)[1]
+            try:
+                blob = base64.b64decode(raw)
+            except Exception:
+                continue
+            if not blob:
+                continue
+            p = updir / name
+            p.write_bytes(blob)
+            paths.append(str(p))
+        self._log(f"浏览器上传 {len(paths)} 个文件 → {updir}")
+        return {"ok": bool(paths), "paths": paths}
 
     _SAVE_KINDS = {
         "xlsx": ("Excel 工作簿 (*.xlsx)", ".xlsx", ("Excel 工作簿", "*.xlsx")),
@@ -1407,24 +1463,30 @@ class WebApi:
     def _dialog_save_file(self, default_name: str, kind: str = "xlsx",
                           initialdir: str = "") -> str:
         flt, _ext, tk_ft = self._SAVE_KINDS.get(kind, self._SAVE_KINDS["xlsx"])
-        if self._window is not None:
-            try:
-                import webview
-                kw = {"save_filename": default_name, "file_types": (flt,)}
-                if initialdir:
-                    kw["directory"] = str(initialdir)
-                paths = self._window.create_file_dialog(webview.SAVE_DIALOG, **kw)
-                # pywebview 部分平台 SAVE_DIALOG 返回单元素 list/tuple 而非字符串
-                if isinstance(paths, (list, tuple)):
-                    paths = paths[0] if paths else ""
-                return str(paths) if paths else ""
-            except Exception:
-                pass
+        mode = self._picker_mode()
+        if mode == "Tk 对话框":
+            return _tk_save_file(default_name, tk_ft, initialdir=initialdir)
+        if mode == "浏览器内置" or self._window is None:
+            # 浏览器内置模式不弹窗：落到导出目录用默认名（路径会回显给用户）
+            self._exports_dir.mkdir(parents=True, exist_ok=True)
+            return str(self._exports_dir / default_name)
+        try:
+            import webview
+            kw = {"save_filename": default_name, "file_types": (flt,)}
+            if initialdir:
+                kw["directory"] = str(initialdir)
+            paths = self._window.create_file_dialog(webview.SAVE_DIALOG, **kw)
+            # pywebview 部分平台 SAVE_DIALOG 返回单元素 list/tuple 而非字符串
+            if isinstance(paths, (list, tuple)):
+                paths = paths[0] if paths else ""
+            return str(paths) if paths else ""
+        except Exception as e:
+            self._log(f"原生保存对话框不可用：{e}，回退 Tk")
         try:
             return _tk_save_file(default_name, tk_ft, initialdir=initialdir)
         except Exception as e:
             raise RuntimeError(f"保存对话框不可用（{e}）。"
-                               "请重试；若持续出现请截图日志反馈") from e
+                               "可在设置页把「文件对话框」切换为其他模式") from e
 
     # ------------------------------------------------------------------ #
     def _log(self, text: str, detail: bool = False) -> None:

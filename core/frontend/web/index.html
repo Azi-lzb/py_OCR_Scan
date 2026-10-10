@@ -760,6 +760,23 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
         </div>
       </div>
       <div class="gen-card">
+        <div class="gen-card-title">文件对话框</div>
+        <div class="gen-row">
+          <div class="gen-row-left">
+            <div class="gen-row-name">选择方式</div>
+            <div class="gen-row-desc">自动＝桌面壳用系统原生、浏览器壳用 Tk。系统原生/Tk 对话框＝强制走指定通道。浏览器内置＝点「选择」直接弹浏览器选文件框，选中后读取并上传到本地服务，完全不依赖系统对话框——桌面壳对话框异常时可切到此项规避。</div>
+          </div>
+          <div class="gen-row-right">
+            <select id="selPicker" class="gen-select">
+              <option value="自动">自动</option>
+              <option value="系统原生">系统原生</option>
+              <option value="Tk 对话框">Tk 对话框</option>
+              <option value="浏览器内置">浏览器内置</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="gen-card">
         <div class="gen-card-title">关于</div>
         <div class="gen-row">
           <div class="gen-row-left">
@@ -780,6 +797,7 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
   <div class="tpl-lib-main" id="tplLibEditor"></div>
 </section>
 <div id="logPane">
+<input type="file" id="browserFile" style="display:none">
   <button id="logToggle"><span class="arr">▸</span><span id="logLast">日志</span></button>
   <div id="logBody"></div>
 </div>
@@ -949,6 +967,13 @@ function syncNav(name){
     api('set_template_auto', on).then(function(st){
       S = st; render();
       toast(on ? '自动匹配模板：开启' : '自动匹配模板：关闭（仅用每张图手动指定的 sheet）', 'ok');
+    }).catch(function(e){ toast(e.message||String(e), 'err'); });
+  });
+  var selPk = document.getElementById('selPicker');
+  if(selPk) selPk.addEventListener('change', function(){
+    api('set_file_picker_mode', selPk.value).then(function(st){
+      S = st; render();
+      toast('文件对话框：' + selPk.value, 'ok');
     }).catch(function(e){ toast(e.message||String(e), 'err'); });
   });
 })();
@@ -1205,6 +1230,9 @@ function syncEngineSetting(){
   var tpl = $("selTplAuto");
   if(tpl && document.activeElement !== tpl)
     tpl.value = (S.template_auto === false) ? "off" : "on";
+  var pk = $("selPicker");
+  if(pk && document.activeElement !== pk)
+    pk.value = S.file_picker_mode || "自动";
 }
 
 function renderBadge(){
@@ -1456,6 +1484,7 @@ function renderScanPreview(){
 }
 (function initScanPage(){
   $("btnScanChoose").addEventListener("click", function(){
+    if(S.file_picker_mode === "浏览器内置"){ browserPick("images-scan"); return; }
     api("choose_images", "scan").then(function(n){
       if(n > 0) toast("已添加 " + n + " 张照片（扫描王）", "ok");
       return api("get_state");
@@ -1607,6 +1636,7 @@ function renderDp(){
 (function initDp(){
   [["btnDpSource", "source"]].forEach(function(pair){
     $(pair[0]).addEventListener("click", function(){
+      if(S.file_picker_mode === "浏览器内置"){ browserPick("dp-source"); return; }
       api("dp_pick", pair[1]).then(function(st){ S = st; renderDp(); })
         .catch(function(e){ toast(e.message || String(e), "err"); });
     });
@@ -1956,7 +1986,56 @@ function poll(){
   }).catch(function(){ /* 外壳切换瞬间容忍失败 */ });
 }
 
+/* ================= 浏览器内置选文件（设置页「文件对话框」=浏览器内置 时用） ================= */
+function browserPick(kind){
+  var inp = $("browserFile");
+  inp.value = "";
+  inp.multiple = (kind !== "dp-source");
+  inp.accept = (kind === "dp-source")
+    ? ".xlsx,.xlsm"
+    : ".png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp,.heic,.heif,.pdf";
+  inp.dataset.kind = kind;
+  inp.click();
+}
+(function initBrowserPick(){
+  var inp = $("browserFile");
+  if(!inp) return;
+  inp.addEventListener("change", function(){
+    var kind = inp.dataset.kind;
+    var fs = Array.prototype.slice.call(inp.files || []);
+    if(!fs.length) return;
+    toast("正在读取 " + fs.length + " 个文件…");
+    var items = [], pend = fs.length;
+    fs.forEach(function(f){
+      var rd = new FileReader();
+      rd.onload = function(){
+        items.push({name: f.name, data: rd.result});
+        if(--pend === 0) submitUpload(kind, items);
+      };
+      rd.onerror = function(){ if(--pend === 0) submitUpload(kind, items); };
+      rd.readAsDataURL(f);
+    });
+  });
+})();
+function submitUpload(kind, items){
+  api("upload_files", items).then(function(res){
+    var ps = res.paths || [];
+    if(!ps.length){ toast("上传失败：没有有效文件", "err"); return; }
+    if(kind === "dp-source"){
+      return api("dp_pick", "source", ps[0]).then(function(st){
+        S = st; renderDp(); toast("已选择源文件", "ok");
+      });
+    }
+    var target = (kind === "images-scan") ? "scan" : "ocr";
+    return api("add_image_paths", ps, target).then(function(n){
+      toast("已添加 " + n + " 个文件", "ok");
+      return api("get_state");
+    }).then(function(st){ S = st; render(); renderScanPage(); });
+  }).catch(function(e){ toast(e.message || String(e), "err"); });
+}
+
 $("btnChoose").addEventListener("click", function(){
+  if(S.file_picker_mode === "浏览器内置"){ browserPick("images-ocr"); return; }
   api("choose_images").then(function(n){
     if(n>0) toast("已添加 "+n+" 张照片", "ok");
     return api("get_state");
