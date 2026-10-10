@@ -2,8 +2,8 @@
 """pywebview 外壳打包（PyInstaller onedir）。
 
 用法：python build_exe.py [--onefile]
-产物：dist/OCR_Tools/ —— 文件夹版（推荐）：启动免解压、杀软误报低；
-    OCR_Tools.exe + _internal（依赖与模型）+ core/data（config/模板种子）。
+产物：dist/OCR国库会计工具/ —— 文件夹版（推荐）：启动免解压、杀软误报低；
+    OCR国库会计工具.exe + _internal（依赖与模型）+ core/data（config/模板种子）。
     core/data 里的 config.xlsx 与 国库报表.xlsx 是种子：打包时"不存在才复制"，
     用户后续修改不会被重建覆盖；加 --reset-data 可强制重置为打包内置版本。
 --onefile 仍可打单文件版（启动慢、误报高，备用）。
@@ -21,7 +21,7 @@ if not (CORE / "src" / "scan2excel").is_dir():
     raise SystemExit(f"[错误] 未找到业务核心：{CORE}\\src\\scan2excel")
 if not (CORE / "frontend" / "web" / "index.html").is_file():
     raise SystemExit("[错误] 未找到前端 index.html")
-NAME = "OCR_Tools"
+NAME = "OCR国库会计工具"
 SEP = ";" if sys.platform == "win32" else ":"
 
 # 打包内置的种子数据（相对 dist 应用目录）：不存在才复制，不覆盖用户修改

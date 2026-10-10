@@ -82,7 +82,7 @@ class WebApi:
     def __init__(self, project_root) -> None:
         self.root = Path(project_root)
         self.state: Dict[str, Any] = {
-            "app_title": "OCR工具",
+            "app_title": "OCR国库会计工具",
             "busy": False,
             "status": "就绪，请先选择照片",
             "images": [],          # [{path,name,status,mode,n_rows,n_cols,elapsed,error,warped,borderless,min_score,ignore_regions}]
@@ -108,7 +108,7 @@ class WebApi:
             "template_auto": True,     # 自动匹配模板（设置可关：只用每图手动指定的 sheet）
             "auto_rotate": True,       # 自动纠正页面方向（设置可关：照片已摆正时省数秒/张）
             "log": [],
-            "version": "25.10.10.0",
+            "version": "25.10.11.0",
         }
         self._pages: List = []     # TablePage 对象（含预览图字节，不进 state）
         self._previews: Dict[str, bytes] = {}   # path → 加图即生成的原图预览 JPEG
@@ -2036,7 +2036,7 @@ def _tk_save_file(default_name: str, tk_ft=("Excel 工作簿", "*.xlsx"),
 # pywebview 入口（shell-pywebview/run.py 调用）
 # ---------------------------------------------------------------------- #
 def app_title() -> str:
-    return "OCR工具"
+    return "OCR国库会计工具"
 
 
 def _frontend_html(project_root: Path) -> Path:
