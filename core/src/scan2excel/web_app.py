@@ -69,7 +69,7 @@ class WebApi:
     def __init__(self, project_root) -> None:
         self.root = Path(project_root)
         self.state: Dict[str, Any] = {
-            "app_title": "拍照表格转Excel",
+            "app_title": "OCR工具",
             "busy": False,
             "status": "就绪，请先选择照片",
             "images": [],          # [{path,name,status,mode,n_rows,n_cols,elapsed,error,warped,borderless,min_score,ignore_regions}]
@@ -1620,7 +1620,7 @@ def _tk_save_file(default_name: str, tk_ft=("Excel 工作簿", "*.xlsx"),
 # pywebview 入口（shell-pywebview/run.py 调用）
 # ---------------------------------------------------------------------- #
 def app_title() -> str:
-    return "拍照表格转Excel"
+    return "OCR工具"
 
 
 def _frontend_html(project_root: Path) -> Path:

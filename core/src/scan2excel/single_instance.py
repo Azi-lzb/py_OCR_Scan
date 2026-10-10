@@ -32,7 +32,7 @@ def show_already_running_message() -> None:
         MB_OK = 0x0
         MB_ICONINFORMATION = 0x40
         ctypes.windll.user32.MessageBoxW(
-            None, "拍照表格转Excel 已在运行中（请查看任务栏）。",
+            None, "OCR工具 已在运行中（请查看任务栏）。",
             "已打开", MB_OK | MB_ICONINFORMATION)
     except Exception:
         pass
