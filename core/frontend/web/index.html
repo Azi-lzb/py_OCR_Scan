@@ -209,12 +209,13 @@ header .spacer{flex:1;}
 /* ---------- 数据处理页 ---------- */
 .dp-body{flex:1; min-height:0; display:flex; flex-direction:column; gap:12px;
   padding:0 16px 14px; overflow:auto;}
+.dp-body > .gen-card{flex:none;}   /* 高分屏小窗口：卡片保持自然高度，容器滚动而非压扁 */
 .dp-body .gen-row-desc{word-break:break-all;}
 .src-line{display:flex; align-items:center; gap:6px; padding:1px 0;}
 .src-line .src-name{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .src-del{cursor:pointer; color:var(--text-3); font-weight:700; padding:0 5px; border-radius:3px; flex:none;}
 .chk-table{width:100%; border-collapse:collapse; font-size:12.5px; margin-top:6px;}
-.chk-table th{background:var(--accent-soft); color:var(--text); padding:5px 8px; text-align:left; border:1px solid var(--border); font-weight:600;}
+.chk-table th{background:var(--accent-soft); color:var(--text); padding:5px 8px; text-align:left; border:1px solid var(--border); font-weight:600; position:sticky; top:0; z-index:1;}
 .chk-table td{padding:4px 8px; border:1px solid var(--border); word-break:break-all;}
 .chk-wl td{background:#92D05033;}
 .chk-err td{background:#FFC7CE55;}
@@ -2012,7 +2013,9 @@ function chkRowsHtml(rows){
       + '</td><td>' + esc(x.detail) + '</td><td>' + x.v1 + '</td><td>' + x.v2
       + '</td><td>' + x.v3 + '</td><td>' + (x.wl ? "是" : "") + '</td></tr>';
   }).join("");
-  return '<div style="max-height:340px; overflow:auto; border:1px solid var(--border); margin-top:6px; background:var(--surface)">'
+  return '<div style="color:var(--text-3); font-size:11.5px; margin:6px 0 2px">共 '
+    + rows.length + ' 条（表格内可上下滚动，表头固定）</div>'
+    + '<div style="max-height:460px; overflow:auto; border:1px solid var(--border); background:var(--surface)">'
     + '<table class="chk-table" style="margin-top:0">' + head + body + '</table></div>';
 }
 
