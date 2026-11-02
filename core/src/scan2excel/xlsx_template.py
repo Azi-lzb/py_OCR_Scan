@@ -359,8 +359,13 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
     return tpl
 
 
+def _numeric_text(v) -> str:
+    """清理 OCR 金额中的千分位分隔符及空白，不猜测其他字符。"""
+    return re.sub(r"[\s,，]", "", "" if v is None else str(v))
+
+
 def _looks_numeric(v) -> bool:
-    s = str(v or "").strip().replace(",", "")
+    s = _numeric_text(v)
     if not s:
         return False
     try:
@@ -406,7 +411,7 @@ def save_sheet_to_workbook(path: Path, sheet_name: str, rows: List[List[str]],
         for c in range(n_cols):
             v = rows[r][c] if c < len(rows[r]) else ""
             ws.cell(row=r + 1, column=c + 1,
-                    value=(float(v.replace(",", "")) if _looks_numeric(v)
+                    value=(float(_numeric_text(v)) if _looks_numeric(v)
                            and r >= header_rows and r not in mid_rows else v))
     for m in merges or []:
         try:
@@ -1249,6 +1254,8 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
             text, score = cell_text(key, tc)
         if text and not _has_meaningful(text):
             text = ""          # 纯标点（"--" 等线痕误读）不入表
+        # 数字区域在识别完成时即去掉千分位及 OCR 夹带空白。
+        text = _numeric_text(text)
         out_rows[tr][tc] = text
         if text:
             page.scores[f"{tr},{tc}"] = score
@@ -1332,7 +1339,7 @@ def fill_template_workbook(tpl_path: Path, sheet_fills: Dict[str, object],
                     if isinstance(v, str) and not v.strip():
                         cell.value = None
                     else:
-                        cell.value = (float(str(v).replace(",", ""))
+                        cell.value = (float(_numeric_text(v))
                                       if _looks_numeric(v) else v)
                 except Exception:
                     continue
@@ -1681,7 +1688,7 @@ def _fill_sheet_values(ws, pg) -> None:
                 if isinstance(v, str) and not v.strip():
                     cell.value = None
                 else:
-                    cell.value = (float(str(v).replace(",", ""))
+                    cell.value = (float(_numeric_text(v))
                                   if _looks_numeric(v) else v)
             except Exception:
                 continue
@@ -1696,7 +1703,7 @@ def _fill_plain_sheet(ws, pg) -> None:
     for r, row in enumerate(rows, start=1):
         for c, v in enumerate(row, start=1):
             cell = ws.cell(row=r, column=c,
-                           value=(float(str(v).replace(",", ""))
+                           value=(float(_numeric_text(v))
                                   if _looks_numeric(v) else v))
             cell.alignment = Alignment(vertical="center")
     for m in getattr(pg, "merges", []) or []:
@@ -1791,7 +1798,7 @@ def evaluate_checks(tpl_path: Path, filled_path: Path,
         if isinstance(v, str) and v.startswith("="):
             v = _eval_formula(v, sheet, 0)
         if isinstance(v, str):
-            s = v.strip().replace(",", "")
+            s = _numeric_text(v)
             try:
                 v = float(s) if s else 0.0
             except ValueError:
