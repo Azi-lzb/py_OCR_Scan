@@ -1809,15 +1809,19 @@ function renderDp(){
       $("btnDpRun").textContent = "归集校验中…";
       api("ts_run").then(function(res){
         var real = (res.total_bad || 0) - (res.wl_hit || 0);
+        var writeBad = res.write_mismatches || 0;
         var wlNote = (res.wl_hit > 0) ? "（含白名单 " + res.wl_hit + " 条）" : "";
         $("dpResult").innerHTML = "归集 " + res.files + " 个源文件、写入 " + res.cells
-          + " 格；总分异常 " + res.total_bad + wlNote + "、不应有数 " + res.no_data_bad;
+          + " 格；回读核对 " + (res.write_checks || 0) + " 格、不符 " + writeBad
+          + "；总分异常 " + res.total_bad
+          + wlNote + "、不应有数 " + res.no_data_bad;
         $("dpTsOut").innerHTML = "归集写入 → " + plink(res.result_path)
           + "（校验结果见时序表内「校验结果」sheet）";
         $("dpChkTable").innerHTML = chkRowsHtml(res.rows);
-        toast("归集校验完成：" + (real > 0 ? real + " 条真异常" :
+        var hardErrors = real + (res.no_data_bad || 0) + writeBad;
+        toast("归集校验完成：" + (hardErrors > 0 ? hardErrors + " 条需核对" :
               (res.total_bad + res.no_data_bad) + " 条差异均为白名单"),
-              real > 0 ? "err" : "ok");
+              hardErrors > 0 ? "err" : "ok");
       }).catch(function(e){ toast(e.message || String(e), "err"); })
         .then(function(){ renderDp(); });
       return;
@@ -1850,18 +1854,22 @@ function renderDp(){
                 mm.length ? "err" : "ok");
         } else {
           var real2 = (res.total_bad || 0) - (res.wl_hit || 0);
+          var writeBad2 = res.write_mismatches || 0;
+          var hardErrors2 = real2 + (res.no_data_bad || 0) + writeBad2;
           var wlNote2 = (res.wl_hit > 0) ? "（含白名单 " + res.wl_hit + " 条）" : "";
           $("btnDpConfirm").style.display = "none";
           $("dpResult").innerHTML = "归集 " + res.files + " 个源文件、写入 " + res.cells
-            + " 格；总分异常 " + res.total_bad + wlNote2 + "、不应有数 " + res.no_data_bad;
+            + " 格；回读核对 " + (res.write_checks || 0) + " 格、不符 " + writeBad2
+            + "；总分异常 " + res.total_bad
+            + wlNote2 + "、不应有数 " + res.no_data_bad;
           $("dpTsOut").innerHTML = "归集写入 → " + plink(res.result_path)
             + "（校验结果见时序表内「校验结果」sheet）";
           $("dpAcBf").innerHTML = "无需补录（未检测到费用指标全 0 的惠州市文件）";
           $("dpAcCopies").innerHTML = "—";
           $("dpChkTable").innerHTML = chkRowsHtml(res.rows);
-          toast("会计校验完成：" + (real2 > 0 ? real2 + " 条真异常" :
+          toast("会计校验完成：" + (hardErrors2 > 0 ? hardErrors2 + " 条需核对" :
                 (res.total_bad + res.no_data_bad) + " 条差异均为白名单"),
-                real2 > 0 ? "err" : "ok");
+                hardErrors2 > 0 ? "err" : "ok");
         }
       }).catch(function(e){ toast(e.message || String(e), "err"); });
       return;
@@ -1883,6 +1891,8 @@ function renderDp(){
     api("ac_confirm").then(function(res){
       $("btnDpConfirm").style.display = "none";
       var real3 = (res.total_bad || 0) - (res.wl_hit || 0);
+      var writeBad3 = res.write_mismatches || 0;
+      var hardErrors3 = real3 + (res.no_data_bad || 0) + writeBad3;
       var wlNote3 = (res.wl_hit > 0) ? "（含白名单 " + res.wl_hit + " 条）" : "";
       var copiesHtml = (res.copies || []).length
         ? "<br>已补录副本：<br>" + (res.copies || []).map(function(cp){
@@ -1891,7 +1901,8 @@ function renderDp(){
         : "";
       $("dpResult").innerHTML = "已补录 " + res.backfilled + " 个惠州市文件；归集 "
         + res.files + " 个源文件；总分异常 "
-        + res.total_bad + wlNote3 + "、不应有数 " + res.no_data_bad;
+        + res.total_bad + wlNote3 + "、不应有数 " + res.no_data_bad
+        + "、回读核对 " + (res.write_checks || 0) + " 格、不符 " + writeBad3;
       $("dpAcBf").innerHTML = "补录 " + res.backfilled + " 个惠州市文件（费用四项 + 增加值 + 父项联动）";
       $("dpAcCopies").innerHTML = (res.copies || []).length
         ? (res.copies || []).map(function(cp){ return plink(cp); }).join("<br>")
@@ -1899,8 +1910,8 @@ function renderDp(){
       $("dpTsOut").innerHTML = "归集写入 → " + plink(res.result_path)
         + "（校验结果见时序表内「校验结果」sheet）";
       $("dpChkTable").innerHTML = chkRowsHtml(res.rows);
-      toast("补录校验完成：" + (real3 > 0 ? real3 + " 条真异常" : "差异均为白名单"),
-            real3 > 0 ? "err" : "ok");
+      toast("补录校验完成：" + (hardErrors3 > 0 ? hardErrors3 + " 条需核对" : "差异均为白名单"),
+            hardErrors3 > 0 ? "err" : "ok");
     }).catch(function(e){ toast(e.message || String(e), "err"); });
   });
   /* 路径超链接：点击用系统程序打开（文件/文件夹） */

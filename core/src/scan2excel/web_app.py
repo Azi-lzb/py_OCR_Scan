@@ -1596,6 +1596,8 @@ class WebApi:
         res = run_treasury(Path(tp), sources, cfg)
         self._save_last_paths()
         self._log(f"国库归集校验完成：{res['files']} 个源文件，写入 {res['cells']} 格，"
+                  f"回读核对 {res.get('write_checks', 0)} 格、不符 "
+                  f"{res.get('write_mismatches', 0)}，"
                   f"总分异常 {res['total_bad']}，不应有数 {res['no_data_bad']}")
         return {"ok": True, **res}
 
@@ -1623,6 +1625,10 @@ class WebApi:
         tp, fee, sources, cfg = self._ac_inputs()
         res = run_accounting(tp, sources, cfg, fee, do_backfill=do_backfill)
         self._save_last_paths()
+        self._log(f"会计归集校验完成：{res['files']} 个源文件，写入 {res['cells']} 格，"
+                  f"回读核对 {res.get('write_checks', 0)} 格、不符 "
+                  f"{res.get('write_mismatches', 0)}，"
+                  f"总分异常 {res['total_bad']}，不应有数 {res['no_data_bad']}")
         return res
 
     def ac_run(self) -> Dict[str, Any]:

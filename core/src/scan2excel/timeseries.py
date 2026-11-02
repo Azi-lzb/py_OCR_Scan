@@ -137,6 +137,18 @@ def normalize_period(raw: str) -> str:
     return str(raw)
 
 
+def _header_period(value: Any) -> str:
+    """标准化时序表头；数值 2026.1 有一月/十月歧义，保留原样待人工核实。"""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        raw = str(value).strip()
+        if re.fullmatch(r"\d{4}\.1", raw):
+            return raw
+        raw = f"{value:.2f}"
+    else:
+        raw = str(value).strip()
+    return normalize_period(raw)
+
+
 def parse_file_name(name: str, regions: List[Dict[str, Any]]) -> Dict[str, str]:
     """`2026.09 惠州市.xls` → {period, region}（关键字最长优先防歧义）。"""
     stem = name.rsplit(".", 1)[0]
@@ -208,9 +220,7 @@ def _snapshot(ws) -> Tuple[Dict[int, str], Dict[str, Dict[str, Any]]]:
         if r == 1:
             for c, v in enumerate(row, 1):
                 if c >= 4 and v not in (None, ""):
-                    # 数值月份（如 2026.09 存成 float）必须保留两位月份
-                    cols[c] = (normalize_period(f"{v:.2f}")
-                               if isinstance(v, float) else normalize_period(str(v).strip()))
+                    cols[c] = _header_period(v)
             continue
         code = str(row[0]).strip() if row and row[0] is not None else ""
         if not code:
@@ -275,8 +285,10 @@ def _write_back(ts: Workbook, region: str,
     """把内存模型写回 region sheet：新月份列表头、新增指标行、值有变化的格。"""
     ws = ts[region] if region in ts.sheetnames else ts.create_sheet(region)
     for c, period in cols.items():
+        cell = ws.cell(1, c)
+        cell.number_format = "@"
+        cell.value = period
         if c not in orig_cols:
-            cell = ws.cell(1, c, period)
             cell.font = Font(bold=True)
     r_next = ws.max_row + 1
     for code in new_rows:
@@ -296,10 +308,113 @@ def _write_back(ts: Workbook, region: str,
                 ws.cell(r, c, v)
 
 
+def _verify_written_values(wb: Workbook, expected: Dict[Tuple[str, str, str], Tuple[str, float, str]],
+                           tolerance: float, biz_label: str,
+                           ts_name: str) -> List[List[Any]]:
+    """重新打开已保存时序后，逐项核对本次导入的最终源值。"""
+    issues: List[List[Any]] = []
+    indexes: Dict[str, Tuple[Dict[int, str], Dict[str, Dict[str, Any]]]] = {}
+    for region, period, code in expected:
+        if region not in indexes and region in wb.sheetnames:
+            indexes[region] = _snapshot(wb[region])
+
+    for (region, period, code), (name, expected_value, source_name) in expected.items():
+        detail = "写入核对不符"
+        actual: Optional[float] = None
+        indexed = indexes.get(region)
+        if indexed is None:
+            detail += "：缺少地区工作表"
+        else:
+            cols, indicators = indexed
+            col = next((c for c, p in cols.items() if p == period), None)
+            if col is None:
+                detail += "：缺少月份列"
+            else:
+                indicator = indicators.get(code)
+                if indicator is None:
+                    detail += "：缺少指标行"
+                else:
+                    raw = indicator["vals"].get(col)
+                    if raw is None or isinstance(raw, str) and not raw.strip():
+                        detail += "：时序值为空"
+                    else:
+                        try:
+                            actual = float(str(raw).replace(",", "").strip())
+                            if actual != actual or actual in (float("inf"), float("-inf")):
+                                raise ValueError("non-finite")
+                        except (TypeError, ValueError):
+                            actual = None
+                            detail += "：时序值异常"
+                        if actual is not None:
+                            if abs(expected_value - actual) > tolerance + 1e-9:
+                                detail += "：金额不一致"
+                            else:
+                                continue
+        delta = expected_value - actual if actual is not None else ""
+        issues.append([period, region, code, name, detail,
+                       expected_value, "", actual if actual is not None else "",
+                       "", delta, biz_label, source_name or ts_name, datetime.now()])
+    return issues
+
+
+def _check_saved_totals(wb: Workbook, base: str, regions: List[Dict[str, Any]],
+                        periods: set, tolerance: float, whitelist: set,
+                        biz_label: str, ts_name: str,
+                        pre_adjust: Optional[Dict[str, float]] = None
+                        ) -> Tuple[List[List[Any]], int, int]:
+    """仅从已保存的时序工作表读取本期数据，按各地区自己的月份列校验。"""
+    if not periods or base not in wb.sheetnames:
+        return [], 0, 0
+    base_cols, base_rows = _snapshot(wb[base])
+    region_data = {}
+    for rg in regions:
+        name = rg["name"]
+        if name != base and name in wb.sheetnames:
+            region_data[name] = _snapshot(wb[name])
+    ordered_periods = sorted(periods)
+    total_cols = {
+        period: next((col for col, p in base_cols.items() if p == period), None)
+        for period in ordered_periods
+    }
+    region_period_cols = {
+        name: {period: next((col for col, p in cols.items() if p == period), None)
+               for period in ordered_periods}
+        for name, (cols, _rows) in region_data.items()
+    }
+    issues: List[List[Any]] = []
+    whitelist_hits = 0
+    adjustments = pre_adjust or {}
+    for code, indicator in base_rows.items():
+        for period, base_col in total_cols.items():
+            if base_col is None:
+                continue
+            city = _num(indicator["vals"].get(base_col))
+            total = 0.0
+            for name, (_cols, rows) in region_data.items():
+                region_col = region_period_cols[name][period]
+                row = rows.get(code)
+                if region_col is not None and row is not None:
+                    total += _num(row["vals"].get(region_col))
+            if abs(city - total) <= tolerance:
+                continue
+            pre = adjustments.get(f"{period}|{code}", city)
+            detail = "总分校验不平"
+            if code in whitelist:
+                detail = "总分不平 (白名单指标)"
+                whitelist_hits += 1
+            if pre_adjust and abs(city - pre) > tolerance:
+                detail += " - 费用调整"
+            issues.append([period, "总分校验", code, indicator["name"], detail,
+                           city, pre if pre_adjust else "", total,
+                           city - pre if pre_adjust else "", city - total,
+                           biz_label, ts_name, datetime.now()])
+    return issues, len(issues), whitelist_hits
+
+
 # ---------------------------------------------------------------- 国库链路
 def run_treasury(timeseries_path: Path, source_paths: List[Path],
                  config_xlsx: Path) -> Dict[str, Any]:
-    """国库链路：归集 → 总分/不应有数校验 → 校验结果+log 落时序表。"""
+    """国库链路：归集写回 → 回读核对 → 时序总分/不应有数校验。"""
     cfg = load_config(config_xlsx)
     tol = cfg["tolerance"]
     base = cfg["base_region"]
@@ -310,6 +425,8 @@ def run_treasury(timeseries_path: Path, source_paths: List[Path],
 
     issues: List[List[Any]] = []
     logs: List[List[Any]] = []
+    processed_periods: set = set()
+    expected_writes: Dict[Tuple[str, str, str], Tuple[str, float, str]] = {}
     stats: Dict[str, Any] = {"files": 0, "regions_new": [], "cells": 0,
                              "total_bad": 0, "no_data_bad": 0, "wl_hit": 0}
     models: Dict[str, Tuple[Dict[int, str], Dict[str, Dict[str, Any]],
@@ -345,6 +462,8 @@ def run_treasury(timeseries_path: Path, source_paths: List[Path],
         rows = read_source_table(src, cfg["value_col"])
         changed = 0
         for row in rows:
+            expected_writes[(region, period, row["code"])] = (
+                row["name"], _num(row["value"]), src.name)
             ind = indicators.get(row["code"])
             if ind is None:
                 indicators[row["code"]] = {"row": None, "name": row["name"],
@@ -360,32 +479,9 @@ def run_treasury(timeseries_path: Path, source_paths: List[Path],
             ind["vals"][col] = row["value"]
             stats["cells"] += 1
         stats["files"] += 1
+        processed_periods.add(period)
         logs.append([src.name, region, period,
                      "[数据更新]" if changed else "[数据导入]", datetime.now()])
-
-    # ---- 总分校验（纯内存） ----
-    if base in models:
-        bcols, bmodel, _oc, _ov, _nr = models[base]
-        members = [rg for rg in regions if rg["name"] != base]
-        member_models = {rg["name"]: models[rg["name"]][1]
-                         for rg in members if rg["name"] in models}
-        for code, ind in bmodel.items():
-            for c, period in bcols.items():
-                city = _num(ind["vals"].get(c))
-                total = 0.0
-                for mmodel in member_models.values():
-                    m = mmodel.get(code)
-                    if m:
-                        total += _num(m["vals"].get(c))
-                if abs(city - total) > tol:
-                    stats["total_bad"] += 1
-                    detail = "总分校验不平"
-                    if code in wl:
-                        detail = "总分不平 (白名单指标)"
-                        stats["wl_hit"] += 1
-                    issues.append([period, "总分校验", code, ind["name"], detail,
-                                   city, "", total, "", city - total,
-                                   "国库校验", ts_path.name, datetime.now()])
 
     # ---- 不应有数校验（纯内存） ----
     for rg in regions:
@@ -405,8 +501,25 @@ def run_treasury(timeseries_path: Path, source_paths: List[Path],
         _write_back(ts, region, indicators, cols, orig_cols, orig_vals, new_rows)
     if "log" in ts.sheetnames:
         del ts["log"]
+    ts.save(ts_path)
+
+    # 先从磁盘重新读取实际保存结果，再做写入核对和总分校验。
+    saved_ts = load_workbook(ts_path, data_only=True, read_only=True)
+    try:
+        issues.extend(_verify_written_values(
+            saved_ts, expected_writes, tol, "国库校验", ts_path.name))
+        total_issues, stats["total_bad"], stats["wl_hit"] = _check_saved_totals(
+            saved_ts, base, regions, processed_periods, tol, wl,
+            "国库校验", ts_path.name)
+        issues.extend(total_issues)
+    finally:
+        saved_ts.close()
+
     _write_result_sheet(ts, issues, "国库校验")
     ts.save(ts_path)
+    stats["write_checks"] = len(expected_writes)
+    stats["write_mismatches"] = sum(
+        1 for issue in issues if str(issue[4]).startswith("写入核对不符"))
     stats["issues"] = len(issues)
     stats["rows"] = _issue_rows(issues, wl)
     stats["result_path"] = str(ts_path)
@@ -424,7 +537,7 @@ def _issue_rows(issues: List[List[Any]], wl: set) -> List[Dict[str, Any]]:
                     "v1": it[5] if len(it) > 5 else "",
                     "v2": it[6] if len(it) > 6 else "",
                     "v3": it[7] if len(it) > 7 else "",
-                    "wl": "白名单" in detail or it[2] in wl})
+                    "wl": "白名单" in detail})
     return out
 
 
@@ -490,8 +603,7 @@ def _save_xls_copy(src: Path, overrides: Dict[Tuple[int, int], Any]) -> Path:
 def run_accounting(timeseries_path: Path, source_paths: List[Path],
                    config_xlsx: Path, fee_path: Path,
                    do_backfill: bool) -> Dict[str, Any]:
-    """会计链路：惠州市表 5 费用指标全 0 时从余额表补录（do_backfill=True 执行，
-    False 返回预览待前端确认），随后与国库同口径归集校验进会计时序表。"""
+    """会计链路：费用及父项调整 → 写回 → 回读核对和时序总分校验。"""
     cfg = load_config(config_xlsx)
     tol = cfg["tolerance"]
     base = cfg["base_region"]
@@ -506,6 +618,8 @@ def run_accounting(timeseries_path: Path, source_paths: List[Path],
 
     issues: List[List[Any]] = []
     logs: List[List[Any]] = []
+    processed_periods: set = set()
+    expected_writes: Dict[Tuple[str, str, str], Tuple[str, float, str]] = {}
     stats: Dict[str, Any] = {"files": 0, "regions_new": [], "cells": 0,
                              "total_bad": 0, "no_data_bad": 0, "wl_hit": 0,
                              "backfilled": 0, "copies": []}
@@ -618,6 +732,8 @@ def run_accounting(timeseries_path: Path, source_paths: List[Path],
             cols[col] = period
         changed = 0
         for row in rows:
+            expected_writes[(region, period, row["code"])] = (
+                row["name"], _num(row["value"]), src.name)
             ind = indicators.get(row["code"])
             if ind is None:
                 indicators[row["code"]] = {"row": None, "name": row["name"],
@@ -644,35 +760,9 @@ def run_accounting(timeseries_path: Path, source_paths: List[Path],
                     add_issue(period, region, row["code"], row["name"],
                               "不应有数", row["value"], 0, "", src.name)
         stats["files"] += 1
+        processed_periods.add(period)
         logs.append([src.name, region, period,
                      "[数据更新]" if changed else "[数据导入]", datetime.now()])
-
-    # ---- 总分校验（内存 + 会计白名单/调整前值/费用调整标注） ----
-    if base in models:
-        bcols, bmodel, _oc, _ov, _nr = models[base]
-        members = [rg for rg in regions if rg["name"] != base]
-        member_models = {rg["name"]: models[rg["name"]][1]
-                         for rg in members if rg["name"] in models}
-        for code, ind in bmodel.items():
-            for c, period in bcols.items():
-                city = _num(ind["vals"].get(c))
-                total = 0.0
-                for mmodel in member_models.values():
-                    m = mmodel.get(code)
-                    if m:
-                        total += _num(m["vals"].get(c))
-                if abs(city - total) > tol:
-                    stats["total_bad"] += 1
-                    pre = pre_adjust.get(f"{period}|{code}", city)
-                    detail = "总分校验不平"
-                    if code in wl:
-                        detail = "总分不平 (白名单指标)"
-                        stats["wl_hit"] += 1
-                    if abs(city - pre) > tol:
-                        detail += " - 费用调整"
-                    issues.append([period, "总分校验", code, ind["name"], detail,
-                                   city, pre, total, city - pre, city - total,
-                                   "会计校验", ts_path.name, datetime.now()])
 
     # ---- 不应有数校验（按地区规则表） ----
     for rg in regions:
@@ -692,8 +782,24 @@ def run_accounting(timeseries_path: Path, source_paths: List[Path],
         _write_back(ts, region, indicators, cols, orig_cols, orig_vals, new_rows)
     if "log" in ts.sheetnames:
         del ts["log"]
+    ts.save(ts_path)
+
+    saved_ts = load_workbook(ts_path, data_only=True, read_only=True)
+    try:
+        issues.extend(_verify_written_values(
+            saved_ts, expected_writes, tol, "会计校验", ts_path.name))
+        total_issues, stats["total_bad"], stats["wl_hit"] = _check_saved_totals(
+            saved_ts, base, regions, processed_periods, tol, wl,
+            "会计校验", ts_path.name, pre_adjust)
+        issues.extend(total_issues)
+    finally:
+        saved_ts.close()
+
     _write_result_sheet(ts, issues, "会计校验")
     ts.save(ts_path)
+    stats["write_checks"] = len(expected_writes)
+    stats["write_mismatches"] = sum(
+        1 for issue in issues if str(issue[4]).startswith("写入核对不符"))
     stats["issues"] = len(issues)
     stats["rows"] = _issue_rows(issues, wl)
     stats["result_path"] = str(ts_path)
