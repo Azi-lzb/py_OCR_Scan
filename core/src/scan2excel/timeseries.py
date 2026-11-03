@@ -50,6 +50,18 @@ def _cell_text(value: Any) -> str:
     return str(value).strip()
 
 
+def _code_text(value: Any) -> str:
+    """指标代码归一：数值 11600、"11600.0"（数值格被文本化）都收敛成 "11600"。
+
+    配置表里的代码用户可能设成数值格式，python-calamine 读出来是 11600.0，
+    直接 str() 得 "11600.0"，与时序表里的 "11600" 永远匹配不上（白名单失效、
+    补录映射错位都是这个原因）。"""
+    text = _cell_text(value)
+    if re.fullmatch(r"[-+]?\d+\.0+", text):
+        return text.split(".")[0]
+    return text
+
+
 # ---------------------------------------------------------------- 配置读取
 def load_config(config_xlsx: Path) -> Dict[str, Any]:
     """读 config.xlsx 的 归集配置/地区规则/白名单/补录映射 四 sheet，缺省值兜底。"""
@@ -93,6 +105,10 @@ def load_config(config_xlsx: Path) -> Dict[str, Any]:
             if isinstance(cfg["backfill_regions"], str):
                 cfg["backfill_regions"] = [x.strip() for x in
                                            cfg["backfill_regions"].split(";") if x.strip()]
+            # 用户可能把代码填成数值：python-calamine 读成 11600.0，直接 str()
+            # 会变成 "11600.0" 而匹配不上指标代码 "11600"，这里统一走 _cell_text。
+            cfg["backfill_parents"] = ";".join(
+                _code_text(x) for x in str(cfg["backfill_parents"]).split(";") if x.strip())
 
         if "地区规则" in wb.sheetnames:
             ws = wb["地区规则"]
@@ -113,19 +129,18 @@ def load_config(config_xlsx: Path) -> Dict[str, Any]:
             ws = wb["补录映射"]
             bmap = []
             for r in range(2, ws.max_row + 1):
-                code = str(ws.cell(r, 1).value or "").strip()
-                fee_code = str(ws.cell(r, 2).value or "").strip()
+                code = _code_text(ws.cell(r, 1).value)
+                fee_code = _code_text(ws.cell(r, 2).value)
                 fee_col = ws.cell(r, 3).value
                 if code and fee_code:
-                    bmap.append((code, fee_code, int(fee_col) if fee_col else 7))
+                    bmap.append((code, fee_code, int(_num(fee_col)) or 7))
             if bmap:
                 cfg["backfill_map"] = bmap
         if "白名单" in wb.sheetnames:
             ws = wb["白名单"]
             for r in range(2, ws.max_row + 1):
                 for col, key in ((2, "国库"), (5, "会计")):   # B 列国库 / E 列会计（VBA 布局）
-                    v = ws.cell(r, col).value
-                    v = str(v).strip() if v is not None else ""
+                    v = _code_text(ws.cell(r, col).value)
                     if v:
                         cfg["whitelist"][key].add(v)
     finally:
@@ -187,7 +202,7 @@ def read_source_table(path: Path, value_col_name: str) -> List[Dict[str, Any]]:
         return row[index] if index < len(row) else None
 
     for r, row in enumerate(matrix[1:], 1):
-        code = _cell_text(cell(row, 0))
+        code = _code_text(cell(row, 0))
         if not code:
             continue
         rows.append({"code": code, "name": _cell_text(cell(row, 1)),
@@ -203,7 +218,13 @@ def read_source_table(path: Path, value_col_name: str) -> List[Dict[str, Any]]:
 def _snapshot(ws) -> Tuple[Dict[int, str], Dict[str, Dict[str, Any]]]:
     """一次性读时序 sheet →
     cols: {列号: 'YYYY.MM'}（数值月份归一）
-    indicators: {code: {"row": 行号, "name": 名, "rowidx": 行次, "vals": {列号: 值}}}"""
+    indicators: {code: {"row": 行号, "name": 名, "rowidx": 行次, "vals": {列号: 值},
+                        "own": 首行自身的值, "dups": [重复行号]}}
+
+    旧版按未归一代码追加过副本行（数字代码经 calamine 读成 11001.0，文本化成
+    "11001.0" 后与原行 "11001" 匹配不上）。这里把同代码的多行合并到首行：
+    后出现的副本只补齐/覆盖自己非空的月份列，行号记入 dups，写回时删除。
+    own 保留首行实际值，供写回判断哪些格需要真正落盘（否则删掉副本会丢数）。"""
     cols: Dict[int, str] = {}
     indicators: Dict[str, Dict[str, Any]] = {}
     for r, row in enumerate(ws.iter_rows(values_only=True), 1):
@@ -212,17 +233,31 @@ def _snapshot(ws) -> Tuple[Dict[int, str], Dict[str, Dict[str, Any]]]:
                 if c >= 4 and v not in (None, ""):
                     cols[c] = _header_period(v)
             continue
-        code = _cell_text(row[0]) if row else ""
+        code = _code_text(row[0]) if row else ""
         if not code:
             continue
         vals: Dict[int, float] = {}
         for c, v in enumerate(row, 1):
             if c >= 4 and v not in (None, ""):
                 vals[c] = _num(v)
-        indicators[code] = {"row": r,
-                            "name": str(row[1]) if len(row) > 1 and row[1] is not None else "",
-                            "rowidx": str(row[2]) if len(row) > 2 and row[2] is not None else "",
-                            "vals": vals}
+        name = str(row[1]) if len(row) > 1 and row[1] is not None else ""
+        rowidx = str(row[2]) if len(row) > 2 and row[2] is not None else ""
+        prev = indicators.get(code)
+        if prev is None:
+            indicators[code] = {"row": r, "name": name, "rowidx": rowidx,
+                                "rowidx_raw": row[2] if len(row) > 2 else None,
+                                "name_missing": not name,
+                                "rowidx_missing": not rowidx,
+                                "vals": vals, "own": dict(vals), "dups": []}
+        else:
+            prev["vals"].update(vals)
+            prev["dups"].append(r)
+            if not prev["name"]:
+                prev["name"] = name
+                if len(row) > 2:
+                    prev["rowidx_raw"] = row[2]
+            if not prev["rowidx"]:
+                prev["rowidx"] = rowidx
     return cols, indicators
 
 
@@ -240,8 +275,27 @@ def _write_back(ts: FastWorkbook, region: str,
                 orig_cols: Dict[int, str],
                 orig_vals: Dict[str, Dict[int, Any]],
                 new_rows: List[str]) -> None:
-    """把内存模型写回 region sheet：新月份列表头、新增指标行、值有变化的格。"""
+    """把内存模型写回 region sheet：新月份列表头、新增指标行、值有变化的格。
+
+    快照里同代码的副本行先删除（行号重新映射），合并后的值按首行实际值判断
+    是否落盘，避免删掉副本时把只在副本里的月份数据一起丢掉。"""
     ws = ts[region] if region in ts.sheetnames else ts.create_sheet(region)
+    ws.text_columns.add(1)   # 指标代码列：整列文本格式，补录后不再变数值
+    drop = {r for ind in model.values() for r in ind.get("dups", [])}
+    if drop:
+        renumber: Dict[int, int] = {}
+        kept: List[List[Any]] = []
+        for old_row, values in enumerate(ws.rows, 1):
+            if old_row in drop:
+                continue
+            renumber[old_row] = len(kept) + 1
+            kept.append(values)
+        ws.rows = kept
+        for ind in model.values():
+            r = ind.get("row")
+            if r in renumber:
+                ind["row"] = renumber[r]
+            ind["dups"] = []
     for c, period in cols.items():
         cell = ws.cell(1, c)
         cell.value = period
@@ -257,12 +311,65 @@ def _write_back(ts: FastWorkbook, region: str,
         r = ind.get("row")
         if r is None:
             continue
-        # 统一保存为文本，避免数字代码在不同读取引擎中出现 .0 差异。
+        # 指标代码一律写字符串：写回是整本重建，Excel 里设的"文本"格式不会被保留，
+        # 只有把值本身写成文本，补录后代码才不会又变回数值。
         ws.cell(r, 1, code)
+        if ind.get("name_missing") and ind["name"]:
+            ws.cell(r, 2, ind["name"])
+        if ind.get("rowidx_missing") and ind.get("rowidx_raw") not in (None, ""):
+            ws.cell(r, 3, ind["rowidx_raw"])
         ovals = orig_vals.get(code, {})
         for c, v in ind["vals"].items():
-            if c not in orig_cols or _num(ovals.get(c)) != v:
+            # 首行该格没有值时也要写（副本行带的显式 0 不能因为 0==空 被吞掉）
+            if c not in orig_cols or c not in ovals or _num(ovals.get(c)) != v:
                 ws.cell(r, c, v)
+
+
+def _merge_duplicate_rows(ts: FastWorkbook, models: Dict[str, Any]) -> List[str]:
+    """把未参与本次归集的 sheet 里同代码的重复行也合并掉，返回清理过的地区名。
+
+    旧版每次运行都会在表尾追加一整块文本代码的副本行，即使本次只归集了部分
+    地区，其他地区的历史副本也应该清掉；重复行的非空月份值合并到首行。"""
+    cleaned: List[str] = []
+    for ws in list(ts.worksheets):
+        title = ws.title
+        if title in ("校验结果", "log") or title in models:
+            continue
+        # 只碰地区时序 sheet（首行是「指标代码」表头），别的工作表一律不动。
+        if _cell_text(ws.cell(1, 1).value) != "指标代码":
+            continue
+        cols, indicators = _snapshot(ws)
+        if not any(ind["dups"] for ind in indicators.values()):
+            continue
+        orig_vals = {code: dict(ind.get("own", ind["vals"]))
+                     for code, ind in indicators.items()}
+        _write_back(ts, title, indicators, cols, dict(cols), orig_vals, [])
+        cleaned.append(title)
+    return cleaned
+
+
+def _normalize_code_column(ts: FastWorkbook) -> List[str]:
+    """把所有地区时序 sheet 的 A 列（指标代码）统一成文本并挂文本格式。
+
+    时序表每次归集都是整本重建，Excel 手工设的"文本"格式带不过来；只有把
+    值本身和列格式一起写成文本，补录后代码才不会又变回数值。返回处理过的
+    sheet 名（供日志核对）。"""
+    done: List[str] = []
+    for ws in ts.worksheets:
+        if ws.title in ("校验结果", "log"):
+            continue
+        if _cell_text(ws.cell(1, 1).value) != "指标代码":
+            continue
+        for r in range(2, ws.max_row + 1):
+            raw = ws.cell(r, 1).value
+            if raw in (None, ""):
+                continue
+            code = _code_text(raw)
+            if not isinstance(raw, str) or raw != code:
+                ws.cell(r, 1, code)
+        ws.text_columns.add(1)
+        done.append(ws.title)
+    return done
 
 
 def _verify_written_values(wb: FastWorkbook, expected: Dict[Tuple[str, str, str], Tuple[str, float, str]],
@@ -292,9 +399,14 @@ def _verify_written_values(wb: FastWorkbook, expected: Dict[Tuple[str, str, str]
                     detail += "：缺少指标行"
                 else:
                     raw = indicator["vals"].get(col)
-                    if raw is None or isinstance(raw, str) and not raw.strip():
-                        detail += "：时序值为空"
-                    else:
+                    if raw is None:
+                        # 写回只写变更格，空单元格在本模块口径下等于 0；
+                        # 只有源值为非 0 时才算真的没写进去。
+                        raw = 0.0
+                        if abs(expected_value) > tolerance + 1e-9:
+                            detail += "：时序值为空"
+                            raw = None
+                    if raw is not None:
                         try:
                             actual = float(str(raw).replace(",", "").strip())
                             if actual != actual or actual in (float("inf"), float("-inf")):
@@ -395,7 +507,9 @@ def run_treasury(timeseries_path: Path, source_paths: List[Path],
         ws = ts[region] if region in ts.sheetnames else None
         cols, indicators = _snapshot(ws) if ws is not None else ({}, {})
         orig_cols = dict(cols)
-        orig_vals = {code: dict(ind["vals"]) for code, ind in indicators.items()}
+        # 首行实际值（不是合并值）：合并副本带来的月份值必须真正写到首行。
+        orig_vals = {code: dict(ind.get("own", ind["vals"]))
+                     for code, ind in indicators.items()}
         new_rows: List[str] = []
         if ws is None:
             stats["regions_new"].append(region)
@@ -456,6 +570,8 @@ def run_treasury(timeseries_path: Path, source_paths: List[Path],
 
     for region, (cols, indicators, orig_cols, orig_vals, new_rows) in models.items():
         _write_back(ts, region, indicators, cols, orig_cols, orig_vals, new_rows)
+    stats["dedup_sheets"] = _merge_duplicate_rows(ts, models)
+    _normalize_code_column(ts)
     if "log" in ts.sheetnames:
         del ts["log"]
     ts.save(ts_path)
@@ -519,7 +635,7 @@ def _fee_values_from_sheet(ws: FastWorksheet, bmap: List[Any]) -> Dict[str, floa
     out: Dict[str, float] = {}
     for code_m, code_f, col_f in bmap:
         for r in range(ws.max_row):
-            if _cell_text(ws.cell(r + 1, 1).value) == code_f:
+            if _code_text(ws.cell(r + 1, 1).value) == code_f:
                 out[code_m] = _num(ws.cell(r + 1, col_f).value)
                 break
     return out
@@ -602,7 +718,9 @@ def run_accounting(timeseries_path: Path, source_paths: List[Path],
         ws = ts[region] if region in ts.sheetnames else None
         cols, indicators = _snapshot(ws) if ws is not None else ({}, {})
         orig_cols = dict(cols)
-        orig_vals = {code: dict(ind["vals"]) for code, ind in indicators.items()}
+        # 首行实际值（不是合并值）：合并副本带来的月份值必须真正写到首行。
+        orig_vals = {code: dict(ind.get("own", ind["vals"]))
+                     for code, ind in indicators.items()}
         new_rows: List[str] = []
         if ws is None:
             stats["regions_new"].append(region)
@@ -729,6 +847,8 @@ def run_accounting(timeseries_path: Path, source_paths: List[Path],
 
     for region, (cols, indicators, orig_cols, orig_vals, new_rows) in models.items():
         _write_back(ts, region, indicators, cols, orig_cols, orig_vals, new_rows)
+    stats["dedup_sheets"] = _merge_duplicate_rows(ts, models)
+    _normalize_code_column(ts)
     if "log" in ts.sheetnames:
         del ts["log"]
     ts.save(ts_path)
@@ -764,7 +884,7 @@ def _fee_names(fee_path: Path) -> Dict[str, str]:
     ws = wb.worksheets[0]
     out: Dict[str, str] = {}
     for r in range(2, ws.max_row + 1):
-        code = _cell_text(ws.cell(r, 1).value)
+        code = _code_text(ws.cell(r, 1).value)
         if code:
             out[code] = _cell_text(ws.cell(r, 2).value)
     return out

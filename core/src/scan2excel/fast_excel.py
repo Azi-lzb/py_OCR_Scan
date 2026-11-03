@@ -112,6 +112,9 @@ class FastWorksheet:
         self.state = state or ("visible" if visible else "hidden")
         self.formula_cells: Dict[Tuple[int, int], str] = {}
         self.conditional_formats: List[ConditionalFormat] = []
+        # 需要强制"文本"格式的列（1 基）；写盘时给整列挂 Excel 文本格式，
+        # 用户后续手工输入的数字代码也不会被 Excel 转成数值。
+        self.text_columns: set[int] = set()
 
     @property
     def max_row(self) -> int:
@@ -511,6 +514,11 @@ def _write_xlsxwriter(path: Path, workbook: FastWorkbook) -> None:
             elif not data.visible:
                 ws.hide()
 
+            if data.text_columns:
+                text_format = writer.add_format({"num_format": "@"})
+                for col in sorted(data.text_columns):
+                    ws.set_column(col - 1, col - 1, None, text_format)
+
             merged_cells: set[Tuple[int, int]] = set()
             for rg in data.merged_cells.ranges:
                 r0, c0 = rg.min_row - 1, rg.min_col - 1
@@ -590,6 +598,9 @@ def _write_openpyxl(path: Path, workbook: FastWorkbook) -> None:
             sheet = old_book.create_sheet(title=data.title)
             if data.state in ("hidden", "veryHidden"):
                 sheet.sheet_state = data.state
+            for col in sorted(data.text_columns):
+                for row_index in range(1, len(data.rows) + 1):
+                    sheet.cell(row_index, col).number_format = "@"
             for row_index, row in enumerate(data.rows, start=1):
                 for col_index, value in enumerate(row, start=1):
                     formula = data.formula_cells.get((row_index, col_index))

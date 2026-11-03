@@ -1850,7 +1850,7 @@ function renderDp(){
           + "；总分异常 " + res.total_bad
           + wlNote + "、不应有数 " + res.no_data_bad;
         $("dpTsOut").innerHTML = "归集写入 → " + plink(res.result_path)
-          + "（校验结果见时序表内「校验结果」sheet）";
+          + "（校验结果见时序表内「校验结果」sheet）" + dedupNote(res);
         $("dpChkTable").innerHTML = chkRowsHtml(res.rows);
         var hardErrors = real + (res.no_data_bad || 0) + writeBad;
         toast("归集校验完成：" + (hardErrors > 0 ? hardErrors + " 条需核对" :
@@ -1897,7 +1897,7 @@ function renderDp(){
             + "；总分异常 " + res.total_bad
             + wlNote2 + "、不应有数 " + res.no_data_bad;
           $("dpTsOut").innerHTML = "归集写入 → " + plink(res.result_path)
-            + "（校验结果见时序表内「校验结果」sheet）";
+            + "（校验结果见时序表内「校验结果」sheet）" + dedupNote(res);
           $("dpAcBf").innerHTML = "无需补录（未检测到费用指标全 0 的惠州市文件）";
           $("dpAcCopies").innerHTML = "—";
           $("dpChkTable").innerHTML = chkRowsHtml(res.rows);
@@ -2047,6 +2047,10 @@ function renderTools(){
 })();
 
 /* ================= 数据处理：校验明细表 ================= */
+function dedupNote(res){
+  var sheets = (res && res.dedup_sheets) || [];
+  return sheets.length ? ("；已合并重复指标行：" + sheets.join("、")) : "";
+}
 function chkRowsHtml(rows){
   if(!rows || !rows.length) return "";
   var head = '<tr><th>月份</th><th>区域/来源</th><th>指标代码</th><th>指标名称</th><th>异常说明</th><th>当前值1</th><th>调整前值2</th><th>地区合计值3</th><th>白名单</th></tr>';

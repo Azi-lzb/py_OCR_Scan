@@ -1647,6 +1647,11 @@ class WebApi:
         finally:
             self._dp_busy = False
 
+    def _dedup_note(self, res: Dict[str, Any]) -> str:
+        """旧版重复指标行被清理时在日志里留痕，避免用户以为表被改动。"""
+        sheets = res.get("dedup_sheets") or []
+        return f"；已合并重复指标行：{'、'.join(sheets)}" if sheets else ""
+
     def _ts_run_inner(self) -> Dict[str, Any]:
         from .timeseries import run_treasury
         ts = self.state.get("ts") or {}
@@ -1664,7 +1669,8 @@ class WebApi:
         self._log(f"国库归集校验完成：{res['files']} 个源文件，写入 {res['cells']} 格，"
                   f"回读核对 {res.get('write_checks', 0)} 格、不符 "
                   f"{res.get('write_mismatches', 0)}，"
-                  f"总分异常 {res['total_bad']}，不应有数 {res['no_data_bad']}")
+                  f"总分异常 {res['total_bad']}，不应有数 {res['no_data_bad']}"
+                  + self._dedup_note(res))
         return {"ok": True, **res}
 
     def _ac_inputs(self) -> tuple:
@@ -1694,7 +1700,8 @@ class WebApi:
         self._log(f"会计归集校验完成：{res['files']} 个源文件，写入 {res['cells']} 格，"
                   f"回读核对 {res.get('write_checks', 0)} 格、不符 "
                   f"{res.get('write_mismatches', 0)}，"
-                  f"总分异常 {res['total_bad']}，不应有数 {res['no_data_bad']}")
+                  f"总分异常 {res['total_bad']}，不应有数 {res['no_data_bad']}"
+                  + self._dedup_note(res))
         return res
 
     @_excel_io_operation
