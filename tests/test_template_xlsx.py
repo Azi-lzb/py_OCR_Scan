@@ -18,8 +18,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "core" / "src"))
 
-from openpyxl import Workbook, load_workbook                      # noqa: E402
-from openpyxl.workbook.defined_name import DefinedName            # noqa: E402
+import xlsxwriter                                                  # noqa: E402
+from scan2excel.fast_excel import read_workbook, set_backend_mode   # noqa: E402
 
 from scan2excel.xlsx_template import (GEO_SHEET, capture_geometry,  # noqa: E402
                                       load_xlsx_template)
@@ -30,32 +30,25 @@ DATA = [[str(i), f"WL-100{i}", "件" * i, f"M8x{i}", "个", str(i * 10)]
 ROWS = [HEADER] + DATA
 
 
-def _fill(ws, rows):
-    for r, row in enumerate(rows, start=1):
-        for c, v in enumerate(row, start=1):
-            ws.cell(row=r, column=c, value=v)
-
-
-def _add_name(ws_or_wb, name, attr):
-    dn = DefinedName(name, attr_text=attr)
-    try:
-        ws_or_wb.defined_names[name] = dn      # openpyxl >= 3.1 dict 形式
-    except Exception:
-        ws_or_wb.defined_names.add(dn)         # 旧式 add 形式
+def _create_workbook(path: Path, sheets, names=()):
+    wb = xlsxwriter.Workbook(str(path))
+    for title, rows in sheets:
+        ws = wb.add_worksheet(title)
+        for r, row in enumerate(rows):
+            for c, value in enumerate(row):
+                ws.write(r, c, value)
+    for name, formula in names:
+        wb.define_name(name, formula)
+    wb.close()
 
 
 def case_sheet_scoped(path: Path) -> None:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "第1页"
-    _fill(ws, ROWS)
-    _add_name(ws, "数字区域", "$F$2:$F$11")
-    _add_name(ws, "结构区域", "$A$1:$E$11")
-    ws2 = wb.create_sheet("第2页")
-    _fill(ws2, ROWS)
-    _add_name(ws2, "数字区域", "$F$2:$F$11")     # 同名，工作表级
-    _add_name(ws2, "结构区域", "$A$1:$E$11")
-    wb.save(path)
+    _create_workbook(path, [("第1页", ROWS), ("第2页", ROWS)], [
+        ("'第1页'!数字区域", "='第1页'!$F$2:$F$11"),
+        ("'第1页'!结构区域", "='第1页'!$A$1:$E$11"),
+        ("'第2页'!数字区域", "='第2页'!$F$2:$F$11"),
+        ("'第2页'!结构区域", "='第2页'!$A$1:$E$11"),
+    ])
 
     tpl = load_xlsx_template(path)
     assert len(tpl.pages) == 2, tpl.pages
@@ -69,13 +62,10 @@ def case_sheet_scoped(path: Path) -> None:
 
 
 def case_workbook_scoped(path: Path) -> None:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "第1页"
-    _fill(ws, ROWS)
-    _add_name(wb, "数字区域", "'第1页'!$F$2:$F$11")
-    _add_name(wb, "结构区域", "'第1页'!$A$1:$E$11")
-    wb.save(path)
+    _create_workbook(path, [("第1页", ROWS)], [
+        ("数字区域", "='第1页'!$F$2:$F$11"),
+        ("结构区域", "='第1页'!$A$1:$E$11"),
+    ])
 
     tpl = load_xlsx_template(path)
     pg = tpl.pages[0]
@@ -84,11 +74,7 @@ def case_workbook_scoped(path: Path) -> None:
 
 
 def case_heuristic(path: Path) -> None:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "第1页"
-    _fill(ws, ROWS)                              # 无任何命名区域
-    wb.save(path)
+    _create_workbook(path, [("第1页", ROWS)])
 
     tpl = load_xlsx_template(path)
     pg = tpl.pages[0]
@@ -99,13 +85,10 @@ def case_heuristic(path: Path) -> None:
 
 
 def case_geometry(path: Path) -> None:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "第1页"
-    _fill(ws, ROWS)
-    _add_name(ws, "数字区域", "$F$2:$F$11")
-    _add_name(ws, "结构区域", "$A$1:$E$11")
-    wb.save(path)
+    _create_workbook(path, [("第1页", ROWS)], [
+        ("'第1页'!数字区域", "='第1页'!$F$2:$F$11"),
+        ("'第1页'!结构区域", "='第1页'!$A$1:$E$11"),
+    ])
 
     tpl = load_xlsx_template(path)
     assert not tpl.pages[0].col_fracs, "初始不应有几何"
@@ -116,20 +99,24 @@ def case_geometry(path: Path) -> None:
     pg2 = tpl2.pages[0]
     assert len(pg2.col_fracs) == 7 and len(pg2.row_fracs) == 12
     assert abs(pg2.col_fracs[-1] - 1.0) < 1e-6
-    wb2 = load_workbook(path)
+    wb2 = read_workbook(path, include_metadata=True)
     assert GEO_SHEET in wb2.sheetnames
-    wb2.close()
+    assert wb2[GEO_SHEET].state == "veryHidden"
     print("✅ ④ capture_geometry：几何比例写入隐藏表并可回读")
 
 
 def main() -> int:
-    with tempfile.TemporaryDirectory() as td:
-        d = Path(td)
-        case_sheet_scoped(d / "a.xlsx")
-        case_workbook_scoped(d / "b.xlsx")
-        case_heuristic(d / "c.xlsx")
-        case_geometry(d / "d.xlsx")
-    print("\n总体结论：✅ xlsx 模板加载全部通过")
+    for backend in ("auto", "fast", "compat"):
+        set_backend_mode(backend)
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            case_sheet_scoped(d / "a.xlsx")
+            case_workbook_scoped(d / "b.xlsx")
+            case_heuristic(d / "c.xlsx")
+            case_geometry(d / "d.xlsx")
+        print(f"✅ {backend} 引擎模板回归通过")
+    set_backend_mode("auto")
+    print("\n总体结论：✅ 三种 Excel 模式模板加载全部通过")
     return 0
 
 

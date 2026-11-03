@@ -1,23 +1,16 @@
 # -*- coding: utf-8 -*-
-"""识别结果写入 Excel 工作簿（openpyxl）。"""
+"""识别结果写入 Excel 工作簿（XlsxWriter / RustPy-XlsxWriter）。"""
 from __future__ import annotations
 
 import re
 from typing import Dict, List, Tuple
 
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
+from .fast_excel import CellRange, FastWorkbook, FastWorksheet
 
 # 疑似数字的文本（含千分位、百分号、负号）转数值，便于在 Excel 里校验求和
 _NUM_RE = re.compile(r"^-?\d{1,3}(,\d{3})*(\.\d+)?$")
 _NUM_PLAIN_RE = re.compile(r"^-?\d+(\.\d+)?$")
 _PCT_RE = re.compile(r"^(-?\d+(?:\.\d+)?)%$")
-
-_HEADER_FILL = PatternFill("solid", fgColor="EAF2E8")
-_HEADER_FONT = Font(bold=True)
-_THIN = Side(style="thin", color="B0B0B0")
-_BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 
 
 def coerce_number(text: str):
@@ -44,97 +37,38 @@ def safe_sheet_name(name: str, used: Dict[str, int]) -> str:
         return cleaned
     used[cleaned] += 1
     suffix = f"({used[cleaned]})"
-    return (cleaned[:31 - len(suffix)] + suffix)
+    return cleaned[:31 - len(suffix)] + suffix
 
 
 def write_workbook(out_path: str, pages: List[Dict]) -> None:
-    """写入一个工作簿。
-
-    pages: [{"name": sheet 名, "title": 表格标题(可空),
-             "rows": [[str]], "merges": [(r,c,rspan,cspan)]}, ...]
-    行列下标从 0 开始；merges 为空列表表示无合并单元格。
-    有 title 时写为第 1 行（跨列合并居中），表头从第 2 行开始。
-    """
-    wb = Workbook()
-    wb.remove(wb.active)
+    """写入新工作簿，保留识别值、标题和合并区；以行优先写入。"""
+    workbook = FastWorkbook()
     used: Dict[str, int] = {}
     for page in pages:
         rows: List[List[str]] = page.get("rows") or []
         merges: List[Tuple[int, int, int, int]] = page.get("merges") or []
         title = (page.get("title") or "").strip()
-        plain = bool(page.get("plain"))   # 整页文字模式：无标题、无表头样式
-        ws = wb.create_sheet(title=safe_sheet_name(page.get("name") or "Sheet", used))
+        sheet_rows: List[List] = []
+        merge_ranges: List[CellRange] = []
         offset = 1 if title else 0
 
         if title:
-            n_cols = max((len(r) for r in rows), default=1)
-            ws.cell(row=1, column=1, value=title)
-            ws.cell(row=1, column=1).font = Font(bold=True, size=14)
-            ws.cell(row=1, column=1).alignment = Alignment(
-                horizontal="center", vertical="center")
-            ws.row_dimensions[1].height = 30
+            n_cols = max((len(row) for row in rows), default=1)
+            sheet_rows.append([title] + [None] * (n_cols - 1))
             if n_cols > 1:
-                ws.merge_cells(start_row=1, start_column=1,
-                               end_row=1, end_column=n_cols)
+                merge_ranges.append(CellRange(1, 1, 1, n_cols))
 
-        for r, row in enumerate(rows, start=1 + offset):
-            for c, text in enumerate(row, start=1):
-                value = coerce_number(str(text))
-                ws.cell(row=r, column=c, value=value)
-                ws.cell(row=r, column=c).border = _BORDER
-                ws.cell(row=r, column=c).alignment = Alignment(
-                    vertical="center",
-                    horizontal="left" if isinstance(value, str) else "right",
-                )
+        for row in rows:
+            sheet_rows.append([coerce_number(str(value)) for value in row])
 
-        for (r, c, rspan, cspan) in merges:
+        for r, c, rspan, cspan in merges:
             if rspan > 1 or cspan > 1:
-                ws.merge_cells(start_row=r + 1 + offset, start_column=c + 1,
-                               end_row=r + rspan + offset, end_column=c + cspan)
+                merge_ranges.append(CellRange(
+                    r + 1 + offset, c + 1, r + rspan + offset, c + cspan))
 
-        _style_header(ws, rows, offset) if not plain else _style_plain(ws)
-        _fit_columns(ws, rows, offset) if not plain else _fit_plain_columns(ws)
+        name = safe_sheet_name(page.get("name") or "Sheet", used)
+        workbook.add_sheet(FastWorksheet(name, sheet_rows, merge_ranges))
 
-    if len(wb.sheetnames) == 0:  # 空数据也产出合法文件
-        wb.create_sheet(title="Sheet")
-    wb.save(out_path)
-
-
-def _style_header(ws, rows: List[List[str]], offset: int = 0) -> None:
-    """表头行（rows 第一行，含标题时位于工作表第 2 行）加底色加粗居中。"""
-    if not rows:
-        return
-    header_row = 1 + offset
-    n_cols = max(len(r) for r in rows)
-    for c in range(1, n_cols + 1):
-        cell = ws.cell(row=header_row, column=c)
-        cell.fill = _HEADER_FILL
-        cell.font = _HEADER_FONT
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-
-
-def _fit_columns(ws, rows: List[List[str]], offset: int = 0) -> None:
-    """按内容粗略自适应列宽（中文按 2 个字符宽度计），标题行不参与统计。"""
-    if not rows:
-        return
-    n_cols = max(len(r) for r in rows)
-    for c in range(1, n_cols + 1):
-        width = 0
-        for row in rows[:200]:
-            text = str(row[c - 1]) if c <= len(row) else ""
-            w = sum(2 if ord(ch) > 127 else 1 for ch in text)
-            width = max(width, w)
-        ws.column_dimensions[get_column_letter(c)].width = min(max(width + 3, 8), 42)
-
-
-def _style_plain(ws) -> None:
-    """整页文字模式：左对齐即可，首行不做表头强调。"""
-    for row in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 500)):
-        for cell in row:
-            cell.alignment = Alignment(horizontal="left", vertical="center")
-
-
-def _fit_plain_columns(ws) -> None:
-    """整页文字模式：单列宽版面。"""
-    if ws.max_column >= 1:
-        ws.column_dimensions["A"].width = 90
+    if not workbook.sheetnames:
+        workbook.add_sheet(FastWorksheet("Sheet"))
+    workbook.save(out_path)

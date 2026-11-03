@@ -4,31 +4,22 @@
 输入：多份 `YYYY.MM 地区名.xls` 指标表（Sheet0，5 列：指标代码/指标名称/
 行序号/余额/上期－余额）+ 一本时序工作簿（每地区一 sheet，行=指标，列=月份）。
 行为：归集进时序 → 总分校验（市级 vs Σ县区）→ 不应有数校验 →
-时序表内写「校验结果」（13 列+颜色）与「log」sheet。
+时序表内写「校验结果」（13 列）。
 全部规则读 config.xlsx：归集配置/地区规则/白名单/补录映射 四 sheet。
 
-性能关键：所有读/算都走内存快照（_snapshot/_merge），只在最后把**变更过的
-格子**写回 openpyxl——openpyxl 的 max_row/cell 属性在循环里是 O(全表)，
-逐格访问会让 1291 指标 × 12 月的簿跑出几十秒。
+性能关键：输入用 python-calamine 读取，运算在内存快照完成，输出整簿用
+RustPy-XlsxWriter（不可用时回退 XlsxWriter）重建。
 """
 from __future__ import annotations
 
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from openpyxl import load_workbook, Workbook
-from openpyxl.styles import Font, PatternFill
+from .fast_excel import FastWorkbook, FastWorksheet, read_workbook
 
 # ---------------------------------------------------------------- 配色（VBA 同款 RGB）
-_FILL = {
-    "backfill_src": ("FFFFCC", "000000"),   # 会计补录来源：浅黄
-    "fee_adjust":   ("E2EFDA", "006100"),   # 费用调整：淡绿
-    "whitelist":    ("92D050", "000000"),   # 白名单：绿
-    "error":        ("FFC7CE", "9C0006"),   # 不平/不符/异常/应为0：红
-    "adjusted":     ("F2FFF2", "008000"),   # 已补录/已调整：浅绿
-}
 _RESULT_HEADERS = ["月份", "区域/来源", "指标代码", "指标名称", "异常说明",
                    "当前值1", "调整前值2", "地区合计值3", "差异(1-2)", "差异(1-3)",
                    "业务类型", "源文件名称", "处理时间"]
@@ -41,8 +32,22 @@ def _num(v: Any) -> float:
     try:
         return float(v)
     except (TypeError, ValueError):
-        m = re.match(r"[-+]?\d*\.?\d+", str(v).strip())
+        text = str(v).strip().replace(",", "").replace("，", "")
+        text = re.sub(r"[\s\u00a0\u3000]+", "", text)
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            m = re.match(r"[-+]?\d*\.?\d+", text)
         return float(m.group(0)) if m else 0.0
+
+
+def _cell_text(value: Any) -> str:
+    """Convert integral Excel numeric identifiers to stable text."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
 
 
 # ---------------------------------------------------------------- 配置读取
@@ -69,7 +74,7 @@ def load_config(config_xlsx: Path) -> Dict[str, Any]:
     }
     if not Path(config_xlsx).is_file():
         return cfg
-    wb = load_workbook(config_xlsx, data_only=True)
+    wb = read_workbook(config_xlsx)
     try:
         if "归集配置" in wb.sheetnames:
             ws = wb["归集配置"]
@@ -165,47 +170,32 @@ def parse_file_name(name: str, regions: List[Dict[str, Any]]) -> Dict[str, str]:
 
 # ---------------------------------------------------------------- 源表读取
 def read_source_table(path: Path, value_col_name: str) -> List[Dict[str, Any]]:
-    """读源指标表（.xls 用 xlrd / .xlsx 用 openpyxl），返回
+    """读源指标表（.xls/.xlsx 均用 python-calamine），返回
     [{code, name, rowidx, value}]；取数列按表头名匹配，找不到退回第 4 列。"""
     rows: List[Dict[str, Any]] = []
-    if path.suffix.lower() == ".xls":
-        import xlrd
-        wb = xlrd.open_workbook(str(path))
-        ws = wb.sheet_by_index(0)
-        headers = [str(ws.cell_value(0, c)).strip() for c in range(ws.ncols)]
-        vcol = headers.index(value_col_name) if value_col_name in headers else 3
-        for r in range(1, ws.nrows):
-            code = str(ws.cell_value(r, 0)).strip()
-            if not code:
-                continue
-            rows.append({
-                "code": code,
-                "name": str(ws.cell_value(r, 1)).strip(),
-                "rowidx": str(ws.cell_value(r, 2)).strip(),
-                "value": _num(ws.cell_value(r, vcol)),
-                "src_row": r,
-                "prev_raw": ws.cell_value(r, 4) if ws.ncols > 4 else "",
-            })
-    else:
-        wb = load_workbook(path, data_only=True, read_only=True)
-        ws = wb[wb.sheetnames[0]]
-        it = ws.iter_rows(values_only=True)
-        headers = [str(h).strip() if h is not None else "" for h in next(it)]
-        vcol = headers.index(value_col_name) if value_col_name in headers else 3
-        r0 = 1
-        for row in it:
-            r0 += 1
-            code = str(row[0]).strip() if row and row[0] is not None else ""
-            if not code:
-                continue
-            def cell(i: int) -> Any:
-                return row[i] if i < len(row) else None
-            rows.append({"code": code, "name": str(cell(1) or "").strip(),
-                         "rowidx": str(cell(2) or "").strip(),
-                         "value": _num(cell(vcol)),
-                         "src_row": r0 - 1,
-                         "prev_raw": cell(4)})
-        wb.close()
+    wb = read_workbook(path)
+    if not wb.worksheets:
+        return rows
+    ws = wb.worksheets[0]
+    matrix = ws.rows
+    if not matrix:
+        return rows
+    headers = [str(h).strip() if h is not None else "" for h in matrix[0]]
+    vcol = headers.index(value_col_name) if value_col_name in headers else 3
+
+    def cell(row: Sequence[Any], index: int) -> Any:
+        return row[index] if index < len(row) else None
+
+    for r, row in enumerate(matrix[1:], 1):
+        code = _cell_text(cell(row, 0))
+        if not code:
+            continue
+        rows.append({"code": code, "name": _cell_text(cell(row, 1)),
+                     "rowidx": _cell_text(cell(row, 2)),
+                     "value": _num(cell(row, vcol)),
+                     "src_row": r,
+                     "prev_raw": cell(row, 4)})
+    wb.close()
     return rows
 
 
@@ -237,46 +227,14 @@ def _snapshot(ws) -> Tuple[Dict[int, str], Dict[str, Dict[str, Any]]]:
 
 
 # ---------------------------------------------------------------- 校验结果 / log 落表
-def _color_for(detail: str, region: str) -> Optional[str]:
-    """VBA 原始判定顺序：白名单/费用调整优先于"不平"，否则白名单行会误标红。"""
-    if region in ("会计补录", "会计父项补录"):
-        return "backfill_src"
-    if "白名单" in detail:
-        return "whitelist"          # 白名单优先：带"- 费用调整"后缀也按绿色
-    if "费用调整" in detail:
-        return "fee_adjust"
-    if "未调整或调整后仍为0" in detail or "调整后仍为0" in detail:
-        return "error"
-    if any(k in detail for k in ("不平", "不符", "异常", "应为0")):
-        return "error"
-    if "已补录" in detail or "已调整" in detail:
-        return "adjusted"
-    return None
-
-
-def _write_result_sheet(ts: Workbook, issues: List[List[Any]], biz: str) -> None:
+def _write_result_sheet(ts: FastWorkbook, issues: List[List[Any]], biz: str) -> None:
     if "校验结果" in ts.sheetnames:
         del ts["校验结果"]
-    ws = ts.create_sheet("校验结果")
-    for c, h in enumerate(_RESULT_HEADERS, 1):
-        cell = ws.cell(1, c, h)
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill("solid", fgColor="D9D9D9")
-    for r, row in enumerate(issues, 2):
-        for c, v in enumerate(row, 1):
-            ws.cell(r, c, v)
-        key = _color_for(str(row[4]), str(row[1]))
-        if key:
-            bg, fg = _FILL[key]
-            fill = PatternFill("solid", fgColor=bg)
-            font = Font(color=fg)
-            for c in range(1, 14):
-                ws.cell(r, c).fill = fill
-                ws.cell(r, c).font = font
+    ts.add_sheet(FastWorksheet("校验结果", [_RESULT_HEADERS] + issues))
 
 
 # ---------------------------------------------------------------- 写回（只写变更格）
-def _write_back(ts: Workbook, region: str,
+def _write_back(ts: FastWorkbook, region: str,
                 model: Dict[str, Dict[str, Any]],
                 cols: Dict[int, str],
                 orig_cols: Dict[int, str],
@@ -286,10 +244,7 @@ def _write_back(ts: Workbook, region: str,
     ws = ts[region] if region in ts.sheetnames else ts.create_sheet(region)
     for c, period in cols.items():
         cell = ws.cell(1, c)
-        cell.number_format = "@"
         cell.value = period
-        if c not in orig_cols:
-            cell.font = Font(bold=True)
     r_next = ws.max_row + 1
     for code in new_rows:
         ind = model[code]
@@ -308,7 +263,7 @@ def _write_back(ts: Workbook, region: str,
                 ws.cell(r, c, v)
 
 
-def _verify_written_values(wb: Workbook, expected: Dict[Tuple[str, str, str], Tuple[str, float, str]],
+def _verify_written_values(wb: FastWorkbook, expected: Dict[Tuple[str, str, str], Tuple[str, float, str]],
                            tolerance: float, biz_label: str,
                            ts_name: str) -> List[List[Any]]:
     """重新打开已保存时序后，逐项核对本次导入的最终源值。"""
@@ -357,7 +312,7 @@ def _verify_written_values(wb: Workbook, expected: Dict[Tuple[str, str, str], Tu
     return issues
 
 
-def _check_saved_totals(wb: Workbook, base: str, regions: List[Dict[str, Any]],
+def _check_saved_totals(wb: FastWorkbook, base: str, regions: List[Dict[str, Any]],
                         periods: set, tolerance: float, whitelist: set,
                         biz_label: str, ts_name: str,
                         pre_adjust: Optional[Dict[str, float]] = None
@@ -421,7 +376,7 @@ def run_treasury(timeseries_path: Path, source_paths: List[Path],
     regions = cfg["regions"]
     wl = cfg["whitelist"].get("国库", set())
     ts_path = Path(timeseries_path)
-    ts = load_workbook(ts_path) if ts_path.is_file() else Workbook()
+    ts = read_workbook(ts_path) if ts_path.is_file() else FastWorkbook()
 
     issues: List[List[Any]] = []
     logs: List[List[Any]] = []
@@ -504,7 +459,7 @@ def run_treasury(timeseries_path: Path, source_paths: List[Path],
     ts.save(ts_path)
 
     # 先从磁盘重新读取实际保存结果，再做写入核对和总分校验。
-    saved_ts = load_workbook(ts_path, data_only=True, read_only=True)
+    saved_ts = read_workbook(ts_path)
     try:
         issues.extend(_verify_written_values(
             saved_ts, expected_writes, tol, "国库校验", ts_path.name))
@@ -544,10 +499,7 @@ def _issue_rows(issues: List[List[Any]], wl: set) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------- 会计补录（阶段二）
 def _fee_period(ws) -> str:
     """余额表 A2 形如 `2026年9月…` → `YYYY-MM`（VBA GetFeePeriod 口径）。"""
-    if hasattr(ws, "cell_value"):
-        raw = str(ws.cell_value(1, 0) or "").strip()
-    else:
-        raw = str(ws["A2"] or "").strip()
+    raw = str(ws.cell(2, 1).value or "").strip()
     m = re.search(r"(\d{4})年(\d{1,2})月", raw)
     if not m:
         return "ERR"
@@ -556,14 +508,17 @@ def _fee_period(ws) -> str:
 
 def _read_fee_values(fee_path: Path, bmap: List[Any]) -> Dict[str, float]:
     """余额表：A 列找余额表代码，值在映射指定的 1 基列号 → {指标代码: 值}。"""
-    import xlrd
-    wb = xlrd.open_workbook(str(fee_path))
-    ws = wb.sheet_by_index(0)
+    wb = read_workbook(fee_path)
+    ws = wb.worksheets[0] if wb.worksheets else FastWorksheet("空")
+    return _fee_values_from_sheet(ws, bmap)
+
+
+def _fee_values_from_sheet(ws: FastWorksheet, bmap: List[Any]) -> Dict[str, float]:
     out: Dict[str, float] = {}
     for code_m, code_f, col_f in bmap:
-        for r in range(ws.nrows):
-            if str(ws.cell_value(r, 0)).strip() == code_f:
-                out[code_m] = _num(ws.cell_value(r, col_f - 1))
+        for r in range(ws.max_row):
+            if _cell_text(ws.cell(r + 1, 1).value) == code_f:
+                out[code_m] = _num(ws.cell(r + 1, col_f).value)
                 break
     return out
 
@@ -574,29 +529,20 @@ def _needs_adjustment(rows: List[Dict[str, Any]]) -> bool:
 
 
 def _save_xls_copy(src: Path, overrides: Dict[Tuple[int, int], Any]) -> Path:
-    """另存 *_已补录* 副本：复制源簿保留全部原值/格式，仅覆盖 overrides
-    （0 基 (行, 列) → 新值）。"""
-    out = src.parent / f"{src.stem}_已补录{src.suffix}"
+    """另存 *_已补录.xlsx* 值副本，覆盖 0 基 (行, 列) 指定的补录值。"""
+    wb = read_workbook(src)
+    if not wb.worksheets:
+        raise RuntimeError(f"源文件没有工作表：{src.name}")
+    ws = wb.worksheets[0]
+    for (r0, c0), value in overrides.items():
+        ws.cell(r0 + 1, c0 + 1, value)
+
+    out = src.parent / f"{src.stem}_已补录.xlsx"
     i = 1
     while out.exists():
-        out = src.parent / f"{src.stem}_已补录_{i}{src.suffix}"
+        out = src.parent / f"{src.stem}_已补录_{i}.xlsx"
         i += 1
-    if src.suffix.lower() == ".xls":
-        import xlrd
-        from xlutils.copy import copy as xl_copy
-        rb = xlrd.open_workbook(str(src), formatting_info=True)
-        w = xl_copy(rb)
-        ws = w.get_sheet(0)
-        for (r0, c0), v in overrides.items():
-            ws.write(r0, c0, v)
-        w.save(str(out))
-    else:
-        from openpyxl import load_workbook
-        wb = load_workbook(src)
-        ws = wb[wb.sheetnames[0]]
-        for (r0, c0), v in overrides.items():
-            ws.cell(r0 + 1, c0 + 1, v)
-        wb.save(str(out))
+    wb.save(out)
     return out
 
 
@@ -614,7 +560,7 @@ def run_accounting(timeseries_path: Path, source_paths: List[Path],
     fee_codes = {c for c, _f, _col in bmap}
     zero_watch = fee_codes | set(parents)
     ts_path = Path(timeseries_path)
-    ts = load_workbook(ts_path) if ts_path.is_file() else Workbook()
+    ts = read_workbook(ts_path) if ts_path.is_file() else FastWorkbook()
 
     issues: List[List[Any]] = []
     logs: List[List[Any]] = []
@@ -632,11 +578,12 @@ def run_accounting(timeseries_path: Path, source_paths: List[Path],
         fp = Path(fee_path) if fee_path else None
         if not fp or not fp.is_file():
             raise RuntimeError("请先选择费用余额表")
-        import xlrd
-        fwb = xlrd.open_workbook(str(fp))
-        fws = fwb.sheet_by_index(0)
+        fwb = read_workbook(fp)
+        if not fwb.worksheets:
+            raise RuntimeError(f"费用余额表没有工作表：{fp.name}")
+        fws = fwb.worksheets[0]
         fee_period = _fee_period(fws)
-        fee_vals = _read_fee_values(fp, bmap)
+        fee_vals = _fee_values_from_sheet(fws, bmap)
 
     def add_issue(period: str, region: str, code: str, name: str, detail: str,
                   v1: Any, v2: Any, v3: Any, src: str) -> None:
@@ -784,7 +731,7 @@ def run_accounting(timeseries_path: Path, source_paths: List[Path],
         del ts["log"]
     ts.save(ts_path)
 
-    saved_ts = load_workbook(ts_path, data_only=True, read_only=True)
+    saved_ts = read_workbook(ts_path)
     try:
         issues.extend(_verify_written_values(
             saved_ts, expected_writes, tol, "会计校验", ts_path.name))
@@ -809,12 +756,13 @@ def run_accounting(timeseries_path: Path, source_paths: List[Path],
 
 def _fee_names(fee_path: Path) -> Dict[str, str]:
     """余额表：代码 → 科目名称（B 列），供补录预览显示。"""
-    import xlrd
-    wb = xlrd.open_workbook(str(fee_path))
-    ws = wb.sheet_by_index(0)
+    wb = read_workbook(fee_path)
+    if not wb.worksheets:
+        return {}
+    ws = wb.worksheets[0]
     out: Dict[str, str] = {}
-    for r in range(1, ws.nrows):
-        code = str(ws.cell_value(r, 0)).strip()
+    for r in range(2, ws.max_row + 1):
+        code = _cell_text(ws.cell(r, 1).value)
         if code:
-            out[code] = str(ws.cell_value(r, 1)).strip()
+            out[code] = _cell_text(ws.cell(r, 2).value)
     return out

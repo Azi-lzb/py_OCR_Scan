@@ -85,19 +85,21 @@ def main() -> int:
         os.remove(out)
     res = api.export_excel(path=out, naming="file")
     assert res["ok"] and os.path.exists(out), res
-    from openpyxl import load_workbook
-    wb = load_workbook(out)
+    from scan2excel.fast_excel import read_workbook, column_letter
+    wb = read_workbook(out)
     # 「汇总检查」sheet 固定插在最前，其后为各照片 sheet
     assert wb.sheetnames == ["汇总检查", "inventory_flat", "production_merge",
                              "notes_photo"], wb.sheetnames
     sum_ws = wb["汇总检查"]
-    assert sum_ws["A1"].value == "序号" and sum_ws["G1"].value == "勾稽结论"
+    assert sum_ws.cell(1, 1).value == "序号" and sum_ws.cell(1, 7).value == "勾稽结论"
     ws = wb["inventory_flat"]
     # 无模板页：普通 sheet（首行表头，第一行数据从第 2 行起）
-    assert ws["A1"].value == "序号", ws["A1"].value
-    assert ws["A2"].value == "改过的值", ws["A2"].value
+    assert ws.cell(1, 1).value == "序号", ws.cell(1, 1).value
+    assert ws.cell(2, 1).value == "改过的值", ws.cell(2, 1).value
     # 合并单元格还原检查
-    merges = [str(m) for m in wb["production_merge"].merged_cells.ranges]
+    merges = [f"{column_letter(m.min_col)}{m.min_row}:"
+              f"{column_letter(m.max_col)}{m.max_row}"
+              for m in wb["production_merge"].merged_cells.ranges]
     assert any("A1" in m for m in merges), f"合并单元格未还原: {merges}"
     print("✅ export_excel(file)：一张工作簿 3 个 Sheet，表头/合并正确")
 
@@ -107,16 +109,15 @@ def main() -> int:
         os.remove(out_t)
     res_t = api.export_excel(path=out_t, naming="title")
     assert res_t["ok"], res_t
-    wb_t = load_workbook(out_t)
+    wb_t = read_workbook(out_t)
     assert "盘点表(修订)" in wb_t.sheetnames, wb_t.sheetnames
-    wb_t.close()
     os.remove(out_t)
     print("✅ export_excel(title)：sheet 名=表标题")
 
     # 5b) 同路径再导一次：应整体覆盖而不是追加 Sheet
     res2 = api.export_excel(path=out)
     assert res2["ok"], res2
-    wb2 = load_workbook(out)
+    wb2 = read_workbook(out)
     assert wb2.sheetnames == wb.sheetnames, f"导出追加而非覆盖: {wb2.sheetnames}"
     print("✅ export_excel 覆盖导出：重复导出不追加 Sheet")
 

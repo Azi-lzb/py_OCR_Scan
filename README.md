@@ -89,7 +89,7 @@ exe + _internal + core/data 种子（config/模板「不存在才复制」，升
 │   ├── src/scan2excel/
 │   │   ├── table_extractor.py  透视校正 + 框线检测 + 单元格切分（OpenCV）
 │   │   ├── ocr_engine.py       RapidOCR 封装（本地离线模型）
-│   │   ├── excel_writer.py     openpyxl 导出（数字转换/合并单元格/列宽自适应）
+│   │   ├── excel_writer.py     Calamine/XlsxWriter 快速导出
 │   │   ├── word_writer.py      python-docx 导出（表格页→Word表格，文字页→段落）
 │   │   ├── service.py          识别管线编排（表格/整页文字双模式）
 │   │   ├── web_app.py          WebApi（状态机 + 后台线程 + 双壳桥接）

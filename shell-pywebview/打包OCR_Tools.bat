@@ -26,7 +26,7 @@ if not defined PY (
   exit /b 1
 )
 
-%PY% -c "import PyInstaller, webview, cv2, rapidocr_onnxruntime, openpyxl, docx" >nul 2>&1
+%PY% -c "import PyInstaller, webview, cv2, rapidocr_onnxruntime, openpyxl, xlrd, python_calamine, xlsxwriter, docx" >nul 2>&1
 if errorlevel 1 (
   echo [ERROR] Missing dependencies. Run:
   echo     %PY% -m pip install -r "%~dp0requirements.txt" pyinstaller

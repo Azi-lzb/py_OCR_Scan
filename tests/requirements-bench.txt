@@ -1,0 +1,2 @@
+# Only needed to generate the synthetic .xls input for tests/bench_excel_io.py.
+xlwt>=1.3.0

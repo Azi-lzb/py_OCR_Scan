@@ -17,11 +17,11 @@ import time
 import traceback
 import webbrowser
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 
 import numpy as np
 
-from openpyxl.utils import get_column_letter
 from typing import Any, Dict, List, Optional
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp",
@@ -76,11 +76,34 @@ def _com_call(fn):
     return _COM.run(wrapped)
 
 
+def _excel_io_operation(fn):
+    """Block spreadsheet-engine changes while a long Excel operation runs."""
+    @wraps(fn)
+    def wrapped(self, *args, **kwargs):
+        with self._excel_io_guard:
+            if self._excel_io_active:
+                raise RuntimeError("另一项 Excel 操作正在进行，请稍候")
+            self._excel_io_active += 1
+            self.state["excel_io_busy"] = True
+        try:
+            return fn(self, *args, **kwargs)
+        finally:
+            with self._excel_io_guard:
+                self._excel_io_active -= 1
+                self.state["excel_io_busy"] = self._excel_io_active > 0
+            from .fast_excel import consume_fallback_events
+            for note in consume_fallback_events():
+                self._log(note)
+    return wrapped
+
+
 class WebApi:
     """前端可调用的全部方法（方法名即 Flask 端点名）。"""
 
     def __init__(self, project_root) -> None:
         self.root = Path(project_root)
+        self._excel_io_guard = threading.RLock()
+        self._excel_io_active = 0
         self.state: Dict[str, Any] = {
             "app_title": "OCR国库会计工具",
             "busy": False,
@@ -107,6 +130,8 @@ class WebApi:
             "tl_mode": "excel",        # 工具页转换类型：excel/word
             "template_auto": True,     # 自动匹配模板（设置可关：只用每图手动指定的 sheet）
             "auto_rotate": True,       # 自动纠正页面方向（设置可关：照片已摆正时省数秒/张）
+            "excel_io_backend": "auto",  # auto | fast | compat
+            "excel_io_busy": False,
             "log": [],
             "version": "25.10.11.0",
         }
@@ -127,7 +152,27 @@ class WebApi:
         self.state["templates_dir"] = str(self._templates_dir)
         self.state["exports_dir"] = str(self._exports_dir)
         self.state["dp"]["config"] = str(self._config_xlsx)   # UI 显示用绝对路径
+        from .fast_excel import BACKEND_MODES, get_backend_mode, set_backend_mode
+        try:
+            saved_backend = self._load_last_paths().get("excel_io_backend", "auto")
+            set_backend_mode(saved_backend if saved_backend in BACKEND_MODES else "auto")
+        except Exception:
+            set_backend_mode("auto")
+        if get_backend_mode() == "fast":
+            # If a fast runtime dependency is absent, keep the settings UI
+            # available by starting with the compatible engine.
+            try:
+                import importlib.util
+                if (importlib.util.find_spec("python_calamine") is None
+                        or importlib.util.find_spec("xlsxwriter") is None):
+                    set_backend_mode("compat")
+            except (ImportError, ValueError):
+                set_backend_mode("compat")
+        self.state["excel_io_backend"] = get_backend_mode()
         self._load_templates()
+        from .fast_excel import consume_fallback_events
+        for note in consume_fallback_events():
+            self._log(note)
         self._cancel = threading.Event()
         self._window = None        # pywebview 窗口引用（attach_window 注入）
         self._log("程序启动")
@@ -284,6 +329,7 @@ class WebApi:
         self._log(f"数据处理：已选择{ {'source': '源文件', 'config': '规则配置', 'template': '国库模板', 'target': '目标文件'}.get(which, which)}：{path}")
         return self.state
 
+    @_excel_io_operation
     def dp_run(self) -> Dict[str, Any]:
         """宽表规则汇总（pytools 1-4 同款）：源文件 → 宽表 xlsx + 按规则去重追加到目标簿。"""
         from .data_process import load_rules_v2, wide_summary
@@ -420,6 +466,7 @@ class WebApi:
                     self._log(f"模板文件损坏已跳过：{f.name}")
         self.state["templates"] = [t.name for t in self._templates]
 
+    @_excel_io_operation
     def save_template(self, index: int, name: str) -> Dict[str, Any]:
         """把当前页（已校对）存为 xlsx 模板（命名区域定义结构/数字区）。
 
@@ -468,6 +515,7 @@ class WebApi:
                   + (f"；已生成 {n_checks} 行勾稽公式" if n_checks else "") + "）")
         return self.state
 
+    @_excel_io_operation
     def get_template_detail(self, name: str) -> Dict[str, Any]:
         """模板完整内容（库页查看/细调用）。
 
@@ -501,6 +549,7 @@ class WebApi:
         d["format"] = "json"
         return d
 
+    @_excel_io_operation
     def update_template(self, name: str, patch_data: Dict[str, Any]) -> Dict[str, Any]:
         """模板库细调保存：按页编辑（单元格文本/数值列/表头行数/页名）+ 改名。
 
@@ -593,26 +642,17 @@ class WebApi:
         if doc is None or not hasattr(doc, "path"):
             return []
         try:
-            from openpyxl import load_workbook
-            wb = load_workbook(doc.path, data_only=False)
+            from .fast_excel import read_workbook
+            wb = read_workbook(doc.path, include_metadata=True)
             if sheet_name not in wb.sheetnames:
-                wb.close()
                 return []
             ws = wb[sheet_name]
             rules = []
-            for cf in ws.conditional_formatting:
-                for rule in cf.rules:
-                    rules.append({
-                        "range": str(cf.sqref),
-                        "type": rule.type,
-                        "formula": (str(rule.formula[0])
-                                    if getattr(rule, "formula", None) else ""),
-                        "desc": (rule.dxf.fill.bgColor.rgb
-                                 if getattr(rule, "dxf", None)
-                                 and rule.dxf and rule.dxf.fill
-                                 and rule.dxf.fill.bgColor else ""),
-                    })
-            wb.close()
+            for rule in ws.conditional_formats:
+                rules.append({"range": rule.ranges,
+                              "type": rule.kind,
+                              "formula": rule.formula,
+                              "desc": ""})
             return rules
         except Exception:
             return []
@@ -622,7 +662,7 @@ class WebApi:
 
         以"整表重写该工作表 + 重命名区域"实现，校验表与其它页不受影响。
         """
-        from openpyxl import load_workbook
+        from .fast_excel import read_workbook
         from .xlsx_template import save_sheet_to_workbook
         patch_data = patch_data or {}
         pidx = int(patch_data.get("page_index", 0))
@@ -640,14 +680,17 @@ class WebApi:
         new_page_name = str(patch_data.get("page_name") or pg.page_name or "第1页")
 
         path = doc.path
-        wb = load_workbook(path, data_only=False)
+        wb = read_workbook(path, include_metadata=True)
         old_name = pg.page_name
         # 删旧表、建新表（保留位置尽量靠前）
         if old_name in wb.sheetnames:
             del wb[old_name]
+        wb.defined_names = [defined for defined in wb.defined_names
+                            if defined.local_sheet != old_name
+                            and f"'{old_name}'!" not in defined.formula
+                            and f"{old_name}!" not in defined.formula]
         tmp_path = path.with_suffix(".tmp.xlsx")
         wb.save(tmp_path)
-        wb.close()
         save_sheet_to_workbook(tmp_path, new_page_name, rows, vc, header_rows,
                                pg.merges,
                                mid_rows=({mid_row} if mid_row >= 0 else set()),
@@ -1140,6 +1183,7 @@ class WebApi:
     # ------------------------------------------------------------------ #
     # 导出
     # ------------------------------------------------------------------ #
+    @_excel_io_operation
     def export_excel(self, path: str = "", naming: str = "file") -> Dict[str, Any]:
         """所有识别结果保存进一张工作簿（每张照片一个 Sheet）。
 
@@ -1436,6 +1480,7 @@ class WebApi:
     def _save_last_paths(self) -> None:
         import json
         data = {
+            "excel_io_backend": self.state.get("excel_io_backend", "auto"),
             "dp_mode": self.state.get("dp_mode"),
             "宽表汇总": {"source": self.state["dp"].get("source", "")},
             "国库数据校验归集": dict(self.state.get("ts") or {}),
@@ -1569,6 +1614,7 @@ class WebApi:
         self._log(f"{mode}：已选择 {kind}：{paths}")
         return self.state
 
+    @_excel_io_operation
     def ts_run(self) -> Dict[str, Any]:
         """国库数据校验归集：源指标表归集进时序表 + 总分/不应有数校验。"""
         if self.state.get("dp_mode") != "国库数据校验归集":
@@ -1631,6 +1677,7 @@ class WebApi:
                   f"总分异常 {res['total_bad']}，不应有数 {res['no_data_bad']}")
         return res
 
+    @_excel_io_operation
     def ac_run(self) -> Dict[str, Any]:
         """会计链路第一步：检测惠州市费用指标是否需要补录。
         需要补录 → 返回预览待前端确认（不写任何数据）；
@@ -1702,6 +1749,7 @@ class WebApi:
         finally:
             self._dp_busy = False
 
+    @_excel_io_operation
     def ac_confirm(self) -> Dict[str, Any]:
         """会计链路第二步：用户确认后执行补录 + 归集校验。"""
         if getattr(self, "_dp_busy", False):
@@ -1800,6 +1848,28 @@ class WebApi:
         if mode in self.PICKER_MODES:
             self.state["file_picker_mode"] = mode
             self._log("文件对话框模式：" + mode)
+        return self.state
+
+    def set_excel_io_backend(self, mode: str) -> Dict[str, Any]:
+        """Switch among automatic fallback, fast-only, and legacy I/O modes."""
+        from .fast_excel import BACKEND_MODES, set_backend_mode
+        mode = str(mode or "").strip().lower()
+        if mode not in BACKEND_MODES:
+            raise ValueError("未知 Excel 引擎")
+        with self._excel_io_guard:
+            if (self._excel_io_active or self.state.get("busy")
+                    or getattr(self, "_dp_busy", False)):
+                raise RuntimeError("Excel 或识别任务正在运行，完成后再切换引擎")
+            set_backend_mode(mode)
+            self.state["excel_io_backend"] = mode
+            self._save_last_paths()
+        labels = {
+            "auto": "自动（优先快速引擎，异常时回退兼容引擎）",
+            "fast": "快速（Calamine / OOXML / RustPy-XlsxWriter / XlsxWriter）",
+            "compat": "兼容（OpenPyXL / xlrd）",
+        }
+        label = labels[mode]
+        self._log("Excel 读写引擎已切换为：" + label)
         return self.state
 
     def _picker_mode(self) -> str:

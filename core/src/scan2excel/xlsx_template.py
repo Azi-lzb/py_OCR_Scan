@@ -20,11 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-from openpyxl import Workbook, load_workbook
-from openpyxl.utils import (column_index_from_string, get_column_letter,
-                            range_boundaries)
-from openpyxl.workbook.defined_name import DefinedName
-from openpyxl.worksheet.worksheet import Worksheet
+from .fast_excel import (CellRange, ConditionalFormat, DefinedName,
+                         FastWorkbook, column_letter, read_workbook)
 
 Cell = Tuple[int, int]      # (row, col) 0-based
 Rect = Tuple[int, int, int, int]   # (r0, c0, r1, c1) 闭区间 0-based
@@ -36,6 +33,37 @@ BALANCE_SHEET = "勾稽"  # 逐行勾稽差额公式（用户在差额列加条�
 _NUM_NAME = re.compile(r"^(数字|NUM)", re.I)
 _STRUCT_NAME = re.compile(r"^(结构|STRUCT)", re.I)
 _MID_NAME = re.compile(r"^(中缝|MID)", re.I)
+
+
+def _column_index_from_string(value: str) -> int:
+    result = 0
+    for char in value.upper():
+        if not ("A" <= char <= "Z"):
+            raise ValueError("无效列名")
+        result = result * 26 + ord(char) - 64
+    return result
+
+
+def _range_boundaries(value: str) -> Tuple[int, int, int, int]:
+    match = re.fullmatch(r"\$?([A-Z]{1,3})\$?(\d+)(?::\$?([A-Z]{1,3})\$?(\d+))?",
+                         str(value).replace("$", ""), re.I)
+    if not match:
+        raise ValueError("无效单元格区域")
+    c0, r0 = _column_index_from_string(match.group(1)), int(match.group(2))
+    c1 = _column_index_from_string(match.group(3) or match.group(1))
+    r1 = int(match.group(4) or match.group(2))
+    return c0, r0, c1, r1
+
+
+def _cell_coordinate(row: int, column: int) -> str:
+    return f"{column_letter(column)}{row}"
+
+
+def _coordinate_to_cell(value: str) -> Tuple[int, int]:
+    match = re.fullmatch(r"\$?([A-Z]{1,3})\$?(\d+)", str(value), re.I)
+    if not match:
+        raise ValueError("无效单元格地址")
+    return int(match.group(2)), _column_index_from_string(match.group(1))
 
 
 # ----------------------------------------------------------------------
@@ -53,7 +81,7 @@ def _parse_refs(attr_text: str, default_sheet: str) -> List[Tuple[str, Rect]]:
         if m:
             sheet, part = m.group(1), m.group(2)
         try:
-            c0, r0, c1, r1 = range_boundaries(part)
+            c0, r0, c1, r1 = _range_boundaries(part)
         except Exception:
             continue
         if None in (r0, c0, r1, c1):
@@ -94,8 +122,8 @@ def _rects_to_attr(sheet: str, rects: List[Rect]) -> str:
     parts = []
     for (r0, c0, r1, c1) in rects:
         q = f"'{sheet}'" if re.search(r"[^A-Za-z0-9_\u4e00-\u9fff]", sheet) else sheet
-        parts.append(f"{q}!${get_column_letter(c0 + 1)}${r0 + 1}:"
-                     f"${get_column_letter(c1 + 1)}${r1 + 1}")
+        parts.append(f"{q}!${column_letter(c0 + 1)}${r0 + 1}:"
+                     f"${column_letter(c1 + 1)}${r1 + 1}")
     return ",".join(parts)
 
 
@@ -222,7 +250,7 @@ def _cell_text(v) -> str:
 def load_xlsx_template(path: Path) -> XlsxTemplate:
     """读取 xlsx 模板：工作簿内每个非校验表 = 一页；命名区域定义结构/数字区。"""
     path = Path(path)
-    wb = load_workbook(path, data_only=False)
+    wb = read_workbook(path, include_metadata=True)
 
     # 命名区域 → 每张表的数字/结构中缝单元格集合
     num_by_sheet: Dict[str, Set[Cell]] = {}
@@ -242,23 +270,14 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
                     range(rect[0], rect[2] + 1))
 
     # ① 工作簿级命名区域（工具生成/Excel 里跨表定义）
-    for dn in wb.defined_names.values():
-        _add_region(dn.name or "", "", str(dn.attr_text or ""))
-    # ② 工作表级命名区域（用户在 Excel 里按单表作用域定义；名字可各表重复，
-    #    这对"一本 xlsx 多张表"的用法更自然）
-    for ws in wb.worksheets:
-        try:
-            sheet_defs = getattr(ws, "defined_names", None) or {}
-        except Exception:
-            sheet_defs = {}
-        for dn in list(sheet_defs.values()):
-            _add_region(dn.name or "", ws.title, str(dn.attr_text or ""))
+    for dn in wb.defined_names:
+        _add_region(dn.name or "", dn.local_sheet or "", dn.formula or "")
 
     # 每张表的命名区域明细（界面/校验共用同一事实来源）
     ranges_by_sheet: Dict[str, Dict[str, List[Rect]]] = {}
-    for dn in wb.defined_names.values():
+    for dn in wb.defined_names:
         nm = dn.name or ""
-        for sheet, rect in _parse_refs(dn.attr_text, ""):
+        for sheet, rect in _parse_refs(dn.formula, dn.local_sheet or ""):
             if not sheet:
                 continue
             ranges_by_sheet.setdefault(sheet, {}).setdefault(nm, []).append(rect)
@@ -270,8 +289,8 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
             continue
         rows: List[List[str]] = []
         n_cols = 0
-        for r in ws.iter_rows():
-            vals = [_cell_text(c.value) for c in r]
+        for source_row in ws.rows:
+            vals = [_cell_text(value) for value in source_row]
             if any(vals):
                 n_cols = max(n_cols, len(vals))
             rows.append(vals)
@@ -324,16 +343,13 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
     tpl.inferred_regions = inferred
     if CHECK_SHEET in wb.sheetnames:
         ws = wb[CHECK_SHEET]
-        for row in ws.iter_rows():
-            for cell in row:
-                v = cell.value
-                if isinstance(v, str) and v.startswith("="):
-                    tpl.check_formulas.append({"cell": cell.coordinate,
-                                               "raw": v})
+        for (row, column), formula in ws.formula_cells.items():
+            tpl.check_formulas.append({"cell": _cell_coordinate(row, column),
+                                       "raw": formula})
     # 读取几何比例（隐藏表）
     if GEO_SHEET in wb.sheetnames:
         try:
-            geo = json.loads(str(wb[GEO_SHEET]["A1"].value or "{}"))
+            geo = json.loads(str(wb[GEO_SHEET].cell(1, 1).value or "{}"))
         except Exception:
             geo = {}
         # 页名被手动改名（如 WPS 里重命名 sheet）后几何键会失配 → 尺寸不符。
@@ -347,7 +363,7 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
                 geo[pg.page_name] = geo[k]
                 del geo[k]
             try:
-                wb[GEO_SHEET]["A1"] = json.dumps(geo, ensure_ascii=False)
+                wb[GEO_SHEET].cell(1, 1).value = json.dumps(geo, ensure_ascii=False)
                 wb.save(path)
             except Exception:
                 pass          # 文件被占用：本次内存已生效，下次载入再试
@@ -355,7 +371,6 @@ def load_xlsx_template(path: Path) -> XlsxTemplate:
             g = geo.get(pg.page_name) or {}
             pg.col_fracs = [float(x) for x in g.get("col_fracs", [])]
             pg.row_fracs = [float(x) for x in g.get("row_fracs", [])]
-    wb.close()
     return tpl
 
 
@@ -392,10 +407,9 @@ def save_sheet_to_workbook(path: Path, sheet_name: str, rows: List[List[str]],
     mid_rows = set(mid_rows or set())
     path = Path(path)
     if replace or not path.is_file():
-        wb = Workbook()
-        wb.remove(wb.active)
+        wb = FastWorkbook()
     else:
-        wb = load_workbook(path, data_only=False)
+        wb = read_workbook(path, include_metadata=True)
     # 表名去重
     name = sheet_name or "第1页"
     base = name
@@ -410,9 +424,9 @@ def save_sheet_to_workbook(path: Path, sheet_name: str, rows: List[List[str]],
     for r in range(n_rows):
         for c in range(n_cols):
             v = rows[r][c] if c < len(rows[r]) else ""
-            ws.cell(row=r + 1, column=c + 1,
-                    value=(float(_numeric_text(v)) if _looks_numeric(v)
-                           and r >= header_rows and r not in mid_rows else v))
+            ws.cell(row=r + 1, column=c + 1).value = (
+                float(_numeric_text(v)) if _looks_numeric(v)
+                and r >= header_rows and r not in mid_rows else v)
     for m in merges or []:
         try:
             r, c, rspan, cspan = (int(x) for x in m)
@@ -420,8 +434,8 @@ def save_sheet_to_workbook(path: Path, sheet_name: str, rows: List[List[str]],
             continue
         if rspan > 1 or cspan > 1:
             try:
-                ws.merge_cells(start_row=r + 1, start_column=c + 1,
-                               end_row=r + rspan, end_column=c + cspan)
+                ws.merged_cells.ranges.append(CellRange(
+                    r + 1, c + 1, r + rspan, c + cspan))
             except Exception:
                 pass
 
@@ -438,40 +452,37 @@ def save_sheet_to_workbook(path: Path, sheet_name: str, rows: List[List[str]],
         rects = cells_to_rects(cells)
         if not rects:
             return
-        parts = []
-        existing = wb.defined_names.get(nm)
-        if existing is not None and existing.attr_text:
-            parts.append(str(existing.attr_text))
+        parts = [existing.formula for existing in wb.defined_names
+                 if existing.name == nm and existing.local_sheet is None
+                 and existing.formula]
         parts.append(_rects_to_attr(name, rects))
         attr = ",".join(x for x in parts if x)
-        try:
-            if existing is not None:
-                del wb.defined_names[nm]
-            wb.defined_names.add(DefinedName(nm, attr_text=attr))
-        except Exception:
-            pass
+        wb.defined_names = [existing for existing in wb.defined_names
+                            if not (existing.name == nm
+                                    and existing.local_sheet is None)]
+        wb.defined_names.append(DefinedName(nm, attr))
 
     # 几何比例存隐藏表（套用时按外框+比例铺格，摆脱内部细线检测）
     if col_fracs and row_fracs:
         if GEO_SHEET not in wb.sheetnames:
             ws_geo = wb.create_sheet(GEO_SHEET)
-            ws_geo.sheet_state = "veryHidden"
+            ws_geo.state = "veryHidden"
+            ws_geo.visible = False
         else:
             ws_geo = wb[GEO_SHEET]
         try:
-            geo = json.loads(str(ws_geo["A1"].value or "{}"))
+            geo = json.loads(str(ws_geo.cell(1, 1).value or "{}"))
         except Exception:
             geo = {}
         geo[name] = {"col_fracs": [round(float(x), 5) for x in col_fracs],
                      "row_fracs": [round(float(y), 5) for y in row_fracs]}
-        ws_geo["A1"] = json.dumps(geo, ensure_ascii=False)
+        ws_geo.cell(1, 1).value = json.dumps(geo, ensure_ascii=False)
 
     add_name("数字区域", num_cells)
     add_name("结构区域", struct_cells)
     # 段内表头（中缝）行已包含在"结构区域"中，不再单独建区域
 
     wb.save(path)
-    wb.close()
 
 
 # ----------------------------------------------------------------------
@@ -1310,11 +1321,11 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
 # ----------------------------------------------------------------------
 def fill_template_workbook(tpl_path: Path, sheet_fills: Dict[str, object],
                            out_path: Path) -> None:
-    """基于模板 xlsx 生成填充后的工作簿（公式/命名区域/格式原样保留）。
+    """用 Calamine 读取模板、填入识别值，再由 XlsxWriter 重建工作簿。
 
     sheet_fills: {sheet_name: page}；page 需有 .rows 与模板页尺寸一致。
     """
-    wb = load_workbook(Path(tpl_path), data_only=False)
+    wb = read_workbook(Path(tpl_path), include_metadata=True)
     for sheet_name, page in sheet_fills.items():
         if sheet_name not in wb.sheetnames:
             continue
@@ -1328,23 +1339,18 @@ def fill_template_workbook(tpl_path: Path, sheet_fills: Dict[str, object],
                         merged_children.add((rr, cc))
         for r, row in enumerate(rows, start=1):
             for c, v in enumerate(row, start=1):
-                if (r, c) in merged_children:
+                if (r, c) in merged_children or (r, c) in ws.formula_cells:
                     continue          # 合并格非锚点不可写
                 try:
                     cell = ws.cell(row=r, column=c)
-                    if isinstance(cell.value, str) and cell.value.startswith("="):
-                        continue      # 不覆盖公式
                     # 空串必须写成 None（真空单元格）："" 参与 C3-D3 之类
                     # 算术会 #VALUE!，把整行的条件格式（勾稽标红）炸掉
-                    if isinstance(v, str) and not v.strip():
-                        cell.value = None
-                    else:
-                        cell.value = (float(_numeric_text(v))
-                                      if _looks_numeric(v) else v)
+                    cell.value = (None if isinstance(v, str) and not v.strip()
+                                  else float(_numeric_text(v))
+                                  if _looks_numeric(v) else v)
                 except Exception:
                     continue
     wb.save(Path(out_path))
-    wb.close()
 
 
 def capture_geometry(path: Path, sheet_name: str,
@@ -1359,14 +1365,15 @@ def capture_geometry(path: Path, sheet_name: str,
         if len(xs) < 2 or len(ys) < 2:
             return False
         path = Path(path)
-        wb = load_workbook(path, data_only=False)
+        wb = read_workbook(path, include_metadata=True)
         if GEO_SHEET not in wb.sheetnames:
             ws = wb.create_sheet(GEO_SHEET)
-            ws.sheet_state = "veryHidden"
+            ws.state = "veryHidden"
+            ws.visible = False
         else:
             ws = wb[GEO_SHEET]
         try:
-            geo = json.loads(str(ws["A1"].value or "{}"))
+            geo = json.loads(str(ws.cell(1, 1).value or "{}"))
         except Exception:
             geo = {}
         w = max(1, xs[-1] - xs[0])
@@ -1375,9 +1382,8 @@ def capture_geometry(path: Path, sheet_name: str,
             "col_fracs": [round((x - xs[0]) / w, 5) for x in xs],
             "row_fracs": [round((y - ys[0]) / h, 5) for y in ys],
         }
-        ws["A1"] = json.dumps(geo, ensure_ascii=False)
+        ws.cell(1, 1).value = json.dumps(geo, ensure_ascii=False)
         wb.save(path)
-        wb.close()
         return True
     except Exception:
         return False
@@ -1395,7 +1401,7 @@ def _instantiate_cf(formula: str, arow: int, acol: int, r: int, c: int) -> str:
         if col_abs:
             outc = colp.lstrip("$")
         else:
-            outc = get_column_letter(c + (column_index_from_string(colp) - acol))
+            outc = column_letter(c + (_column_index_from_string(colp) - acol))
         outr = int(rowp.lstrip("$")) if row_abs else \
             r + (int(rowp.lstrip("$")) - arow)
         return ("$" if col_abs else "") + outc + str(outr)
@@ -1440,9 +1446,7 @@ def append_summary_sheet(out_path: Path, pages: List,
     每张表一行：勾稽（条件格式）结论、不平行明细、行对齐、耗时——
     与界面「OCR识别结果」页同源；不平行的结论红字、平衡绿字。
     """
-    from openpyxl import load_workbook
-    from openpyxl.styles import Font, PatternFill
-    wb = load_workbook(Path(out_path))
+    wb = read_workbook(Path(out_path), include_metadata=True)
     if "汇总检查" in wb.sheetnames:
         del wb["汇总检查"]
     ws = wb.create_sheet("汇总检查", 0)
@@ -1473,87 +1477,27 @@ def append_summary_sheet(out_path: Path, pages: List,
                      str(getattr(pg, "title", "") or ""), template,
                      f"{pg.n_rows}×{pg.n_cols}", concl, detail, align,
                      round(float(getattr(pg, "elapsed", 0) or 0), 1)))
-    for row in rows:
-        ws.append(row)
-    # 样式：表头加粗+底色；勾稽结论着色；列宽；冻结表头
-    head_font = Font(bold=True)
-    head_fill = PatternFill("solid", fgColor="EAF2E8")
-    red = Font(color="CC0000", bold=True)
-    green = Font(color="2E7D32")
-    gray = Font(color="808080")
-    for c in ws[1]:
-        c.font = head_font
-        c.fill = head_fill
-    for ri in range(2, len(rows) + 1):
-        concl = ws.cell(ri, 7)
-        if str(concl.value).startswith("✗"):
-            concl.font = red
-        elif str(concl.value).startswith("✓"):
-            concl.font = green
-        elif concl.value == "未套模板":
-            concl.font = gray
-    for col, wd in zip("ABCDEFGHIJ", (6, 30, 12, 32, 24, 9, 14, 48, 20, 9)):
-        ws.column_dimensions[col].width = wd
-    ws.freeze_panes = "A2"
+    for r, row in enumerate(rows, start=1):
+        for c, value in enumerate(row, start=1):
+            ws.cell(r, c).value = value
     wb.save(Path(out_path))
-    wb.close()
 
 
 def copy_template_sheet(src_ws, dst_wb, title: str):
-    """把模板工作表复制进目标工作簿（保留值/样式/合并/条件格式等）。
-
-    openpyxl 不支持跨工作簿 copy_worksheet，这里逐元素复制；条件格式
-    （用户的勾稽标红规则）用深拷贝带回——导出的 Excel 打开即可见标红。
-    """
-    from copy import copy as _copy
-    from openpyxl.utils import get_column_letter
-
+    """把模板工作表的值、公式、合并及勾稽规则复制到导出簿。"""
     dst = dst_wb.create_sheet(title=title)
-    for row in src_ws.iter_rows():
-        for cell in row:
-            nc = dst.cell(row=cell.row, column=cell.column, value=cell.value)
-            # 跨工作簿不能直接拷 _style（StyleArray 索引指向源工作簿的
-            # 样式表，到目标表越界/错位）——按值重建样式，模板里画的
-            # 框线/底色/字体由此随导出保留
-            if cell.has_style:
-                nc.font = _copy(cell.font)
-                nc.fill = _copy(cell.fill)
-                nc.border = _copy(cell.border)
-                nc.alignment = _copy(cell.alignment)
-                nc.protection = _copy(cell.protection)
-                nc.number_format = cell.number_format
-    for mr in list(src_ws.merged_cells.ranges):
-        try:
-            dst.merge_cells(str(mr))
-        except Exception:
-            pass
-    for key, dim in src_ws.column_dimensions.items():
-        if dim.width:
-            dst.column_dimensions[key].width = dim.width
-    for key, dim in src_ws.row_dimensions.items():
-        if dim.height:
-            dst.row_dimensions[key].height = dim.height
-    # 条件格式（勾稽规则）——必须深拷贝，rule 对象不可跨工作簿共用；
-    # 表达式规则顶层比较两侧包 ROUND(...,2) 消浮点尾差防假红
-    for cf in src_ws.conditional_formatting:
-        for rule in cf.rules:
-            try:
-                rule2 = _copy(rule)
-                try:
-                    if rule2.type == "expression" and rule2.formula:
-                        wrapped = _wrap_round2(str(rule2.formula[0]))
-                        if wrapped:
-                            rule2.formula = [wrapped]
-                except Exception:
-                    pass
-                dst.conditional_formatting.add(str(cf.sqref), rule2)
-            except Exception:
-                pass
-    try:
-        if src_ws.freeze_panes:
-            dst.freeze_panes = src_ws.freeze_panes
-    except Exception:
-        pass
+    dst.rows = [list(row) for row in src_ws.rows]
+    dst.merged_cells.ranges = list(src_ws.merged_cells.ranges)
+    dst.formula_cells = dict(src_ws.formula_cells)
+    dst.conditional_formats = []
+    for rule in src_ws.conditional_formats:
+        formula = rule.formula
+        if rule.kind == "expression":
+            wrapped = _wrap_round2("=" + formula.lstrip("="))
+            if wrapped:
+                formula = wrapped
+        dst.conditional_formats.append(
+            ConditionalFormat(rule.ranges, formula.lstrip("="), rule.kind))
     return dst
 
 
@@ -1569,11 +1513,9 @@ def build_export_workbook(out_path: Path, pages: List,
     多张时全组加 #序号（#1、#2…），供公式区分同名表。
     返回导出后各 sheet 名（供勾稽求值定位）。
     """
-    from openpyxl import Workbook, load_workbook
     from collections import Counter, defaultdict
 
-    wb = Workbook()
-    wb.remove(wb.active)
+    wb = FastWorkbook()
     used: Dict[str, int] = {}
     tpl_cache: Dict[str, object] = {}
     sheet_titles: List[str] = []
@@ -1641,7 +1583,7 @@ def build_export_workbook(out_path: Path, pages: List,
             src_wb = tpl_cache.get(tpl_file)
             if src_wb is None:
                 try:
-                    src_wb = load_workbook(Path(tpl_file), data_only=False)
+                    src_wb = read_workbook(Path(tpl_file), include_metadata=True)
                     tpl_cache[tpl_file] = src_wb
                 except Exception:
                     src_wb = None
@@ -1654,15 +1596,9 @@ def build_export_workbook(out_path: Path, pages: List,
             _fill_plain_sheet(ws, pg)
         sheet_titles.append(ws.title)
 
-    for src_wb in tpl_cache.values():
-        try:
-            src_wb.close()
-        except Exception:
-            pass
     if not wb.sheetnames:
         wb.create_sheet(title="Sheet")
     wb.save(Path(out_path))
-    wb.close()
     return sheet_titles
 
 
@@ -1677,12 +1613,10 @@ def _fill_sheet_values(ws, pg) -> None:
     rows = getattr(pg, "rows", []) or []
     for r, row in enumerate(rows, start=1):
         for c, v in enumerate(row, start=1):
-            if (r, c) in merged_children:
+            if (r, c) in merged_children or (r, c) in ws.formula_cells:
                 continue          # 合并格非锚点不可写
             try:
                 cell = ws.cell(row=r, column=c)
-                if isinstance(cell.value, str) and cell.value.startswith("="):
-                    continue      # 不覆盖公式
                 # 空串必须写成 None（真空单元格）："" 参与 C3-D3 之类
                 # 算术会 #VALUE!，把整行的条件格式（勾稽标红）炸掉
                 if isinstance(v, str) and not v.strip():
@@ -1695,32 +1629,20 @@ def _fill_sheet_values(ws, pg) -> None:
 
 
 def _fill_plain_sheet(ws, pg) -> None:
-    """未套模板的页：写值 + 表头样式 + 合并还原（对齐旧 write_workbook 行为）。"""
-    from openpyxl.styles import Alignment, Font, PatternFill
-
-    header_fill = PatternFill("solid", fgColor="EAF2E8")
+    """未套模板的页：写值并还原合并区。"""
     rows = getattr(pg, "rows", []) or []
     for r, row in enumerate(rows, start=1):
         for c, v in enumerate(row, start=1):
-            cell = ws.cell(row=r, column=c,
-                           value=(float(_numeric_text(v))
-                                  if _looks_numeric(v) else v))
-            cell.alignment = Alignment(vertical="center")
+            ws.cell(row=r, column=c).value = (
+                float(_numeric_text(v)) if _looks_numeric(v) else v)
     for m in getattr(pg, "merges", []) or []:
         try:
             r, c, rspan, cspan = (int(x) for x in m)
             if rspan > 1 or cspan > 1:
-                ws.merge_cells(start_row=r + 1, start_column=c + 1,
-                               end_row=r + rspan, end_column=c + cspan)
+                ws.merged_cells.ranges.append(CellRange(
+                    r + 1, c + 1, r + rspan, c + cspan))
         except Exception:
             continue
-    if rows:
-        n_cols = max(len(r) for r in rows)
-        for c in range(1, n_cols + 1):
-            cell = ws.cell(row=1, column=c)
-            cell.fill = header_fill
-            cell.font = Font(bold=True)
-            cell.alignment = Alignment(horizontal="center", vertical="center")
 
 
 def _x15(x):
@@ -1766,7 +1688,7 @@ def evaluate_checks(tpl_path: Path, filled_path: Path,
     out: List[str] = []
     bad_rows: List[int] = []
     try:
-        wb = load_workbook(Path(filled_path), data_only=False)
+        wb = read_workbook(Path(filled_path), include_metadata=True)
     except Exception:
         return out
 
@@ -1794,9 +1716,14 @@ def evaluate_checks(tpl_path: Path, filled_path: Path,
         ws = wb[sheet] if sheet in wb.sheetnames else None
         if ws is None:
             return 0.0
-        v = ws[coord].value
-        if isinstance(v, str) and v.startswith("="):
-            v = _eval_formula(v, sheet, 0)
+        try:
+            row, column = _coordinate_to_cell(coord)
+        except ValueError:
+            return 0.0
+        v = ws.cell(row, column).value
+        formula = ws.formula_cells.get((row, column))
+        if formula:
+            v = _eval_formula(formula, sheet, 0)
         if isinstance(v, str):
             s = _numeric_text(v)
             try:
@@ -1821,10 +1748,10 @@ def evaluate_checks(tpl_path: Path, filled_path: Path,
             if "!" in b:
                 b = b.split("!", 1)[1]
             vals = []
-            c0, r0, c1, r1 = range_boundaries(a + ":" + b)
+            c0, r0, c1, r1 = _range_boundaries(a + ":" + b)
             for rr in range(r0, r1 + 1):
                 for cc in range(c0, c1 + 1):
-                    vals.append(cell_val(sh, get_column_letter(cc) + str(rr)))
+                    vals.append(cell_val(sh, _cell_coordinate(rr, cc)))
             return repr(_sumargs(*vals))
         return re.sub(r"(?i)SUM\(\s*([^()]+?)\s*\)", repl, expr)
 
@@ -1912,59 +1839,46 @@ def evaluate_checks(tpl_path: Path, filled_path: Path,
                    "minargs": _minargs, "maxargs": _maxargs}
         return eval(expr, {"__builtins__": {}}, allowed)  # noqa: S307
 
-    try:
-        from openpyxl.worksheet.cell_range import CellRange
-    except Exception:
-        wb.close()
-        return out
-
     for ws in wb.worksheets:
         if ws.title in (CHECK_SHEET, GEO_SHEET, BALANCE_SHEET):
             continue
         if sheets and ws.title not in sheets:
             continue
-        try:
-            cf_list = list(ws.conditional_formatting)
-        except Exception:
-            continue
-        for cf in cf_list:
-            for rule in cf.rules:
-                try:
-                    if rule.type != "expression" or not rule.formula:
-                        continue
-                    tpl_formula = str(rule.formula[0])
-                    refs = str(cf.sqref).split()
-                    if not refs:
-                        continue
-                    anchor = CellRange(refs[0])
-                    arow, acol = anchor.min_row, anchor.min_col
-                    bad = []
-                    for rng in refs:
-                        cr = CellRange(rng)
-                        for rr in range(cr.min_row, cr.max_row + 1):
-                            for cc in range(cr.min_col, cr.max_col + 1):
-                                inst = _instantiate_cf(tpl_formula, arow, acol,
-                                                       rr, cc)
-                                try:
-                                    res = _eval_formula("=" + inst, ws.title, 0)
-                                except Exception:
-                                    continue
-                                if res is True:
-                                    bad.append((rr, cc))
-                    if bad:
-                        bad_rows.extend(rr - 1 for (rr, _c) in bad)
-                        lines = ["%s 勾稽不平 %d 行（模板条件格式标红处，请核对）："
-                                 % (ws.title, len(bad))]
-                        for (rr, _cc) in bad[:10]:
-                            code = ws.cell(row=rr, column=1).value
-                            name = ws.cell(row=rr, column=2).value
-                            tag = " ".join(str(x) for x in (code, name) if x)
-                            lines.append("  第%d行%s" % (rr,
-                                        ("[%s]" % tag) if tag else ""))
-                        if len(bad) > 10:
-                            lines.append("  … 其余 %d 行" % (len(bad) - 10))
-                        out.append("\n".join(lines))
-                except Exception:
+        for rule in ws.conditional_formats:
+            try:
+                if rule.kind != "expression" or not rule.formula:
                     continue
-    wb.close()
+                tpl_formula = str(rule.formula)
+                refs = str(rule.ranges).split()
+                if not refs:
+                    continue
+                acol, arow, _c1, _r1 = _range_boundaries(refs[0])
+                bad = []
+                for rng in refs:
+                    c0, r0, c1, r1 = _range_boundaries(rng)
+                    for rr in range(r0, r1 + 1):
+                        for cc in range(c0, c1 + 1):
+                            inst = _instantiate_cf(tpl_formula, arow, acol,
+                                                   rr, cc)
+                            try:
+                                res = _eval_formula("=" + inst, ws.title, 0)
+                            except Exception:
+                                continue
+                            if res is True:
+                                bad.append((rr, cc))
+                if bad:
+                    bad_rows.extend(rr - 1 for (rr, _c) in bad)
+                    lines = ["%s 勾稽不平 %d 行（模板条件格式标红处，请核对）："
+                             % (ws.title, len(bad))]
+                    for (rr, _cc) in bad[:10]:
+                        code = ws.cell(rr, 1).value
+                        name = ws.cell(rr, 2).value
+                        tag = " ".join(str(x) for x in (code, name) if x)
+                        lines.append("  第%d行%s" % (rr,
+                                    ("[%s]" % tag) if tag else ""))
+                    if len(bad) > 10:
+                        lines.append("  … 其余 %d 行" % (len(bad) - 10))
+                    out.append("\n".join(lines))
+            except Exception:
+                continue
     return out, sorted(set(bad_rows))

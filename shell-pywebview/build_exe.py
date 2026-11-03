@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import shutil
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -59,10 +60,11 @@ def build() -> int:
         # RapidOCR 的 .onnx 模型在包内，必须随包收集
         "--collect-all", "rapidocr_onnxruntime",
         "--collect-all", "webview",
-        # 时序归集读 .xls 老格式（阶段一归集校验）
+        # Excel 数据读取（Calamine Rust 扩展）与快速写入器
+        "--collect-all", "python_calamine",
+        "--collect-all", "openpyxl",
         "--collect-all", "xlrd",
-        # 会计补录另存 *_已补录* .xls 副本
-        "--collect-all", "xlwt",
+        "--collect-all", "xlsxwriter",
         # 批量格式转换 COM（Excel/WPS/Word 引擎）
         "--collect-all", "win32com",
         "--collect-all", "pythoncom",
@@ -93,6 +95,8 @@ def build() -> int:
         "--specpath", str(ROOT / "build"),
         str(ROOT / "run.py"),
     ]
+    if importlib.util.find_spec("rustpy_xlsxwriter") is not None:
+        args.extend(["--collect-all", "rustpy_xlsxwriter"])
     import PyInstaller.__main__
     PyInstaller.__main__.run(args)
 

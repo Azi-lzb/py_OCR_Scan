@@ -16,8 +16,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from openpyxl import load_workbook, Workbook
-from openpyxl.utils import get_column_letter
+from .fast_excel import FastWorkbook, FastWorksheet, column_letter, read_workbook
 
 DEFAULT_RULE = {
     "enabled": True,
@@ -55,7 +54,7 @@ def load_rules(config_xlsx: Optional[Path]) -> List[Dict[str, Any]]:
     rules: List[Dict[str, Any]] = []
     if config_xlsx and Path(config_xlsx).is_file():
         try:
-            wb = load_workbook(Path(config_xlsx), data_only=True)
+            wb = read_workbook(Path(config_xlsx))
             if "时序规则" in wb.sheetnames:
                 ws = wb["时序规则"]
                 headers = [_norm(ws.cell(1, c).value) for c in range(1, ws.max_column + 1)]
@@ -101,7 +100,7 @@ def _fill_merged_forward(ws, row: int, c_start: int, c_end: int) -> List[str]:
 def timeline_extract(source_path: Path, rules: List[Dict[str, Any]],
                      out_path: Path) -> Dict[str, Any]:
     """按规则把源文件所有匹配 sheet 摊平为长表并写出。"""
-    wb = load_workbook(Path(source_path), data_only=True)
+    wb = read_workbook(Path(source_path))
     src_name = Path(source_path).stem
     out_rows: List[List[Any]] = []
     rule_stat: Dict[str, int] = {}
@@ -166,22 +165,15 @@ def timeline_extract(source_path: Path, rules: List[Dict[str, Any]],
                 rule_stat[rule.get("name", "")] = rule_stat.get(rule.get("name", ""), 0) + n
     wb.close()
 
-    out = Workbook()
-    sheet = out.active
-    sheet.title = "汇总长表"
-    sheet.append(_LONG_HEADERS)
-    for row in out_rows:
-        sheet.append(row)
-    for c, wd in zip("ABCDEFG", (18, 26, 12, 12, 30, 22, 18)):
-        sheet.column_dimensions[c].width = wd
-    sheet.freeze_panes = "A2"
+    out = FastWorkbook()
+    out.add_sheet(FastWorksheet("汇总长表", [_LONG_HEADERS] + out_rows))
     out.save(Path(out_path))
     return {"rows": len(out_rows), "rule_stat": rule_stat, "path": str(out_path)}
 
 
 def pages_from_export(source_path: Path) -> List[Dict[str, Any]]:
     """读导出文件的每个 sheet 为页面数据（名称=工作表名，行=值矩阵）。"""
-    wb = load_workbook(Path(source_path), data_only=True)
+    wb = read_workbook(Path(source_path))
     out: List[Dict[str, Any]] = []
     for ws in wb.worksheets:
         rows: List[List] = []
@@ -197,22 +189,20 @@ def pages_from_export(source_path: Path) -> List[Dict[str, Any]]:
 
 def write_default_config(path: Path) -> None:
     """生成默认规则 config.xlsx（用户可在此基础上加规则）。"""
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "时序规则"
     headers = ["启用", "规则名称", "工作簿关键词", "工作表关键词", "表头行",
                "行头列", "数据起始行", "数据结束列", "数据起始列", "跳过关键词", "仅数值"]
-    ws.append(headers)
-    ws.append(["是", DEFAULT_RULE["name"], "", "", DEFAULT_RULE["header_rows"],
-               DEFAULT_RULE["row_header_cols"], DEFAULT_RULE["data_row_start"],
-               DEFAULT_RULE["data_col_end"], DEFAULT_RULE["data_col_start"],
-               "", DEFAULT_RULE["skip_nonnumeric"]])
-    ws.append(["说明", "一行一条规则；工作簿/工作表关键词留空=匹配全部；"
-               "表头行=列组名所在行；行头列=行标识所在列；多列/多行用英文逗号"])
-    for c, wd in zip("ABCDEFGHIJ", (6, 16, 16, 16, 8, 8, 10, 10, 16, 8)):
-        ws.column_dimensions[c].width = wd
+    rows = [
+        headers,
+        ["是", DEFAULT_RULE["name"], "", "", DEFAULT_RULE["header_rows"],
+         DEFAULT_RULE["row_header_cols"], DEFAULT_RULE["data_row_start"],
+         DEFAULT_RULE["data_col_end"], DEFAULT_RULE["data_col_start"],
+         "", DEFAULT_RULE["skip_nonnumeric"]],
+        ["说明", "一行一条规则；工作簿/工作表关键词留空=匹配全部；"
+         "表头行=列组名所在行；行头列=行标识所在列；多列/多行用英文逗号"],
+    ]
+    wb = FastWorkbook()
+    wb.add_sheet(FastWorksheet("时序规则", rows))
     wb.save(Path(path))
-    wb.close()
 
 
 # ------------------------------------------------------------------
@@ -240,7 +230,7 @@ def load_rules_v2(config_xlsx: Optional[Path]) -> List[Dict[str, Any]]:
     cfg = Path(config_xlsx) if config_xlsx else None
     if cfg and cfg.is_file():
         try:
-            wb = load_workbook(cfg, data_only=True)
+            wb = read_workbook(cfg)
             if "时序提取规则" in wb.sheetnames:
                 ws = wb["时序提取规则"]
                 headers = [_norm(ws.cell(1, c).value) for c in range(1, ws.max_column + 1)]
@@ -331,7 +321,7 @@ def _col_paths_for(ws, header_rows: List[int],
     for c in range(c_start, ce + 1):
         p = raw[c]
         if not p:
-            out.append("列_" + get_column_letter(c))
+            out.append("列_" + column_letter(c))
         elif p in dup:
             seen[p] = seen.get(p, 0) + 1
             out.append("%s_%d" % (p, seen[p]))
@@ -393,13 +383,13 @@ def append_to_target(target_wb: Path, target_sheet: str, header: List[str],
     tw = Path(target_wb)
     if tw.is_file():
         try:
-            twb = load_workbook(tw)
+            twb = read_workbook(tw)
         except Exception as e:
             raise RuntimeError(
                 f"目标工作簿无法读取（文件损坏或格式不对）：{tw} —— {e}")
         if target_sheet in twb.sheetnames:
             tws = twb[target_sheet]
-            old_header = [_norm(c.value) for c in tws[1]]
+            old_header = [_norm(v) for v in (tws.rows[0] if tws.rows else [])]
             if any(c not in old_header for c in required_prefix):
                 twb.close()
                 stat["reason"] = "header_mismatch"
@@ -407,7 +397,7 @@ def append_to_target(target_wb: Path, target_sheet: str, header: List[str],
             # 列对齐：旧列在前，新列顺延（pytools allow_extend 同款）
             merged_cols = list(old_header) + [c for c in header if c not in old_header]
             old_rows = []
-            for r in tws.iter_rows(min_row=2, values_only=True):
+            for r in tws.rows[1:]:
                 if all(v in (None, "") for v in r):
                     continue
                 old_rows.append(list(r) + [""] * (len(merged_cols) - len(r)))
@@ -427,32 +417,18 @@ def append_to_target(target_wb: Path, target_sheet: str, header: List[str],
                 return stat
             idx = twb.sheetnames.index(target_sheet)
             twb.remove(tws)
-            tws = twb.create_sheet(target_sheet, idx)
-            tws.append(merged_cols)
-            for row in old_rows + new_rows:
-                tws.append(row)
+            tws = FastWorksheet(target_sheet, [merged_cols] + old_rows + new_rows)
+            twb.add_sheet(tws, idx)
         else:
             stat["added"] = len(batch)
-            tws = twb.create_sheet(target_sheet)
-            tws.append(header)
-            for row in batch:
-                tws.append(row)
+            tws = FastWorksheet(target_sheet, [header] + batch)
+            twb.add_sheet(tws)
     else:
         tw.parent.mkdir(parents=True, exist_ok=True)
-        twb = Workbook()
-        tws = twb.active
-        tws.title = target_sheet
-        tws.append(header)
-        for row in batch:
-            tws.append(row)
+        twb = FastWorkbook()
+        tws = FastWorksheet(target_sheet, [header] + batch)
+        twb.add_sheet(tws)
         stat["added"] = len(batch)
-    hdr_vals = [_norm(x.value) for x in tws[1]]
-    if "数据日期" in hdr_vals:
-        di = hdr_vals.index("数据日期") + 1
-        for rr in range(2, tws.max_row + 1):
-            cell = tws.cell(rr, di)
-            if isinstance(cell.value, (date, datetime)):
-                cell.number_format = "yyyy-mm-dd"
     try:
         twb.save(tw)
     except PermissionError:
@@ -469,7 +445,7 @@ def wide_summary(source_path: Path, rules: List[Dict[str, Any]],
     同名行头不压并（每个源行独立一行）；数据日期从源文件名解析（YYYYMMDD）。
     """
     src = Path(source_path)
-    wb = load_workbook(src, data_only=True)
+    wb = read_workbook(src)
     wb_name = src.name
     data_date: Any = ""
     m = re.search(r"(20\d{2})[_.-]?(\d{2})[_.-]?(\d{2})", src.stem)
@@ -538,7 +514,7 @@ def wide_summary(source_path: Path, rules: List[Dict[str, Any]],
                     v = ws.cell(r, c).value
                     if v in (None, ""):
                         continue
-                    cp = col_paths[c - cs] if 0 <= c - cs < len(col_paths) else ("列_" + get_column_letter(c))
+                    cp = col_paths[c - cs] if 0 <= c - cs < len(col_paths) else ("列_" + column_letter(c))
                     vals[cp] = v
                 if not vals:
                     continue
@@ -549,22 +525,17 @@ def wide_summary(source_path: Path, rules: List[Dict[str, Any]],
                     bucket.setdefault(cp, v)
     wb.close()
 
-    out = Workbook()
-    sheet = out.active
-    sheet.title = "宽表"
     headers = ["工作簿名", "工作表名", "数据日期", "行头路径"] + col_order
-    sheet.append(headers)
     # 按源顺序输出：源工作簿的 sheet 顺序 × 源行号顺序（pytools 同款，不排序）
     total = 0
+    rows_out: List[List[Any]] = []
     for rname, rb in buckets.items():
         for (wbk, shk, rhk, _rn), vals in rb.items():
-            sheet.append([wbk, shk, data_date, rhk] + [vals.get(cp, "") for cp in col_order])
+            rows_out.append([wbk, shk, data_date, rhk] +
+                            [vals.get(cp, "") for cp in col_order])
             total += 1
-    for c, wd in zip("ABCD", (22, 26, 12, 20)):
-        sheet.column_dimensions[c].width = wd
-    for c in range(5, len(headers) + 1):
-        sheet.column_dimensions[get_column_letter(c)].width = 16
-    sheet.freeze_panes = "E2"
+    out = FastWorkbook()
+    out.add_sheet(FastWorksheet("宽表", [headers] + rows_out))
     out.save(Path(out_path))
 
     # 写目标簿（pytools 同款）：每条启用目标写入的规则，把自己的行去重追加到目标表

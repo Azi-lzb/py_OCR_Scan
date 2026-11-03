@@ -121,8 +121,8 @@ def main() -> int:
     print(f"\n已导出: {XLSX_PATH}")
 
     # 读回验证
-    from openpyxl import load_workbook
-    wb = load_workbook(XLSX_PATH)
+    from scan2excel.fast_excel import read_workbook
+    wb = read_workbook(XLSX_PATH)
     print("sheet:", wb.sheetnames)
     ok_sheets = len(wb.sheetnames) == len(pages)
     ws = wb[wb.sheetnames[0]]

@@ -839,6 +839,22 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
         </div>
       </div>
       <div class="gen-card">
+        <div class="gen-card-title">Excel 读写引擎</div>
+        <div class="gen-row">
+          <div class="gen-row-left">
+            <div class="gen-row-name">处理模式</div>
+            <div class="gen-row-desc">自动：优先快速引擎，读写失败时回退兼容引擎并记入日志；快速：强制使用新引擎；兼容：使用 OpenPyXL/xlrd。快速模式以 Calamine 读值、OOXML 读模板规则，RustPy 不适用时用 XlsxWriter 写入。切换会记住选择，处理中暂时锁定。</div>
+          </div>
+          <div class="gen-row-right">
+            <select id="selExcelBackend" class="gen-select">
+              <option value="auto">自动（推荐）</option>
+              <option value="fast">快速</option>
+              <option value="compat">兼容（旧引擎）</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="gen-card">
         <div class="gen-card-title">文件对话框</div>
         <div class="gen-row">
           <div class="gen-row-left">
@@ -1058,6 +1074,18 @@ function syncNav(name){
       S = st; render();
       toast('文件对话框：' + selPk.value, 'ok');
     }).catch(function(e){ toast(e.message||String(e), 'err'); });
+  });
+  var selExcelBackend = document.getElementById('selExcelBackend');
+  if(selExcelBackend) selExcelBackend.addEventListener('change', function(){
+    var mode = selExcelBackend.value;
+    api('set_excel_io_backend', mode).then(function(st){
+      S = st; render();
+      var labels = {auto:'自动模式', fast:'快速模式', compat:'兼容模式'};
+      toast('Excel 引擎：' + labels[mode], 'ok');
+    }).catch(function(e){
+      selExcelBackend.value = S.excel_io_backend || 'auto';
+      toast(e.message||String(e), 'err');
+    });
   });
 })();
 
@@ -1325,6 +1353,12 @@ function syncEngineSetting(){
   var pk = $("selPicker");
   if(pk && document.activeElement !== pk)
     pk.value = S.file_picker_mode || "自动";
+  var excelBackend = $("selExcelBackend");
+  if(excelBackend){
+    if(document.activeElement !== excelBackend)
+      excelBackend.value = S.excel_io_backend || "auto";
+    excelBackend.disabled = !!(S.excel_io_busy || S.busy);
+  }
 }
 
 function renderBadge(){
