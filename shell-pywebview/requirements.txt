@@ -5,8 +5,6 @@ openpyxl>=3.1
 xlrd>=2.0.1
 python-calamine>=0.5.4
 xlsxwriter>=3.2
-# Optional Rust-backed writer acceleration; XlsxWriter is the fallback.
-# rustpy-xlsxwriter>=0.6.1
 python-docx>=1.1
 numpy>=1.24
 pywin32>=306 ; sys_platform == "win32"

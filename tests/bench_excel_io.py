@@ -143,25 +143,13 @@ def write_xlsxwriter(path: Path, rows: int, cols: int):
     fast_sheet = fast_excel.FastWorksheet("数据")
     fast_sheet.rows = list(matrix(rows, cols))
     fast_book.add_sheet(fast_sheet)
-    fast_excel.write_workbook(path, fast_book, backend="fast",
-                              writer="xlsxwriter")
+    fast_excel.write_workbook(path, fast_book, backend="fast")
 
 
-def write_rustpy(path: Path, rows: int, cols: int):
-    from rustpy_xlsxwriter import FastExcel
-    values = list(matrix(rows, cols))
-    headers = values[0]
-    records = [dict(zip(headers, row)) for row in values[1:]]
-    writer = FastExcel(path)
-    writer.sheet("数据", records)
-    writer.save()
-
-
-def write_backend(path: Path, rows: int, cols: int, backend: str,
-                  writer: str | None = None):
+def write_backend(path: Path, rows: int, cols: int, backend: str):
     fast_book = fast_excel.FastWorkbook()
     fast_book.add_sheet(fast_excel.FastWorksheet("数据", list(matrix(rows, cols))))
-    fast_excel.write_workbook(path, fast_book, backend=backend, writer=writer)
+    fast_excel.write_workbook(path, fast_book, backend=backend)
 
 
 def main() -> int:
@@ -241,8 +229,6 @@ def main() -> int:
             ("write_openpyxl_write_only_s",
              lambda p, r, c: write_openpyxl(p, r, c, True)),
         ]
-        if __import__("importlib").util.find_spec("rustpy_xlsxwriter"):
-            writer_specs.append(("write_rustpy_xlsxwriter_s", write_rustpy))
         output_files = {}
         for key, writer_fn in writer_specs:
             out = root / f"{key}.xlsx"

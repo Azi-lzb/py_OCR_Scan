@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import shutil
-import importlib.util
 import sys
 from pathlib import Path
 
@@ -93,8 +92,6 @@ def build() -> int:
             "--exclude-module", "pythoncom",
             "--exclude-module", "pywintypes",
         ])
-    if importlib.util.find_spec("rustpy_xlsxwriter") is not None:
-        args.extend(["--collect-all", "rustpy_xlsxwriter"])
     import PyInstaller.__main__
     PyInstaller.__main__.run(args)
 

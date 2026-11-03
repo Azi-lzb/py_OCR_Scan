@@ -8,7 +8,7 @@
 全部规则读 config.xlsx：归集配置/地区规则/白名单/补录映射 四 sheet。
 
 性能关键：输入用 python-calamine 读取，运算在内存快照完成，输出整簿用
-RustPy-XlsxWriter（不可用时回退 XlsxWriter）重建。
+XlsxWriter 重建。
 """
 from __future__ import annotations
 
@@ -212,7 +212,7 @@ def _snapshot(ws) -> Tuple[Dict[int, str], Dict[str, Dict[str, Any]]]:
                 if c >= 4 and v not in (None, ""):
                     cols[c] = _header_period(v)
             continue
-        code = str(row[0]).strip() if row and row[0] is not None else ""
+        code = _cell_text(row[0]) if row else ""
         if not code:
             continue
         vals: Dict[int, float] = {}
@@ -257,6 +257,8 @@ def _write_back(ts: FastWorkbook, region: str,
         r = ind.get("row")
         if r is None:
             continue
+        # 统一保存为文本，避免数字代码在不同读取引擎中出现 .0 差异。
+        ws.cell(r, 1, code)
         ovals = orig_vals.get(code, {})
         for c, v in ind["vals"].items():
             if c not in orig_cols or _num(ovals.get(c)) != v:

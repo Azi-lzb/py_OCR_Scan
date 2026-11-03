@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""识别结果写入 Excel 工作簿（XlsxWriter / RustPy-XlsxWriter）。"""
+"""识别结果写入 Excel 工作簿（XlsxWriter）。"""
 from __future__ import annotations
 
 import re

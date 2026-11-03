@@ -1892,7 +1892,7 @@ class WebApi:
             self._save_last_paths()
         labels = {
             "auto": "自动（优先快速引擎，异常时回退兼容引擎）",
-            "fast": "快速（Calamine / OOXML / RustPy-XlsxWriter / XlsxWriter）",
+            "fast": "快速（Calamine / OOXML / XlsxWriter）",
             "compat": "兼容（OpenPyXL / xlrd）",
         }
         label = labels[mode]

@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Fast Excel I/O based on Calamine and XlsxWriter.
+"""Fast Excel I/O based on Calamine, OOXML and XlsxWriter.
 
-Reads .xls/.xlsx with python-calamine and rewrites .xlsx files using RustPy-
-XlsxWriter when its record-based API fits the sheet, otherwise XlsxWriter.
+Reads .xls/.xlsx with python-calamine and rewrites .xlsx files with XlsxWriter.
 XLSX formulas, names, merge ranges, hidden sheets and expression checks are
 carried through; visual formatting is intentionally minimal.
 """
@@ -492,26 +491,6 @@ def read_workbook(path: Path | str, include_metadata: bool = False,
     raise ValueError(f"未知 Excel 引擎：{selected}")
 
 
-def _rust_records(sheet: FastWorksheet) -> Optional[List[Dict[str, Any]]]:
-    """Convert a rectangular sheet with unique text headers for RustPy's API."""
-    if (sheet.merged_cells.ranges or sheet.formula_cells
-            or sheet.conditional_formats or len(sheet.rows) < 2):
-        return None
-    headers = sheet.rows[0]
-    width = len(headers)
-    if width == 0 or any(not isinstance(h, str) or not h for h in headers):
-        return None
-    if len(set(headers)) != width:
-        return None
-    records: List[Dict[str, Any]] = []
-    for row in sheet.rows[1:]:
-        if len(row) > width:
-            return None
-        records.append({headers[c]: row[c] if c < len(row) else None
-                        for c in range(width)})
-    return records
-
-
 def _write_xlsxwriter(path: Path, workbook: FastWorkbook) -> None:
     import xlsxwriter
 
@@ -649,49 +628,16 @@ def _write_openpyxl(path: Path, workbook: FastWorkbook) -> None:
         old_book.close()
 
 
-def _write_fast(path: Path, workbook: FastWorkbook,
-                writer: Optional[str] = None) -> None:
-    """Write using RustPy where its record API fits, otherwise XlsxWriter."""
-    if writer == "xlsxwriter":
-        _write_xlsxwriter(path, workbook)
-        return
-    if writer not in (None, "rustpy"):
-        raise ValueError(f"未知写入器：{writer}")
-
-    try:
-        from rustpy_xlsxwriter import FastExcel
-    except ImportError:
-        FastExcel = None  # type: ignore[assignment,misc]
-
-    rust_sheets = []
-    if (FastExcel is not None and workbook.worksheets
-            and not workbook.defined_names
-            and all(sheet.state == "visible" for sheet in workbook.worksheets)):
-        for sheet in workbook.worksheets:
-            records = _rust_records(sheet)
-            if records is None:
-                rust_sheets = []
-                break
-            rust_sheets.append((sheet, records))
-
-    if rust_sheets:
-        try:
-            rust_writer = FastExcel(path)
-            for sheet, records in rust_sheets:
-                rust_writer.sheet(sheet.title, records)
-            rust_writer.save()
-            return
-        except Exception:
-            path.unlink(missing_ok=True)
+def _write_fast(path: Path, workbook: FastWorkbook) -> None:
+    """Write with XlsxWriter."""
     _write_xlsxwriter(path, workbook)
 
 
 def write_workbook(path: Path | str, workbook: FastWorkbook,
-                   backend: Optional[str] = None,
-                   writer: Optional[str] = None) -> None:
+                   backend: Optional[str] = None) -> None:
     """Atomically write with auto fallback, forced fast, or compat engine.
 
-    ``writer="xlsxwriter"`` is an explicit benchmark/debug override.
+    The fast writer is XlsxWriter; compat mode retains the OpenPyXL fallback.
     """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -701,11 +647,9 @@ def write_workbook(path: Path | str, workbook: FastWorkbook,
     temp = Path(temp_name)
     try:
         selected = str(backend or get_backend_mode()).lower()
-        if writer not in (None, "rustpy", "xlsxwriter"):
-            raise ValueError(f"未知写入器：{writer}")
         if selected == "auto":
             try:
-                _write_fast(temp, workbook, writer)
+                _write_fast(temp, workbook)
             except Exception as fast_error:
                 temp.unlink(missing_ok=True)
                 try:
@@ -719,7 +663,7 @@ def write_workbook(path: Path | str, workbook: FastWorkbook,
         elif selected == "compat":
             _write_openpyxl(temp, workbook)
         elif selected == "fast":
-            _write_fast(temp, workbook, writer)
+            _write_fast(temp, workbook)
         else:
             raise ValueError(f"未知 Excel 引擎：{selected}")
         os.replace(temp, target)

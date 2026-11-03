@@ -61,8 +61,7 @@ def main() -> int:
                 assert page.conditional_formats
                 assert workbook["几何"].state == "veryHidden"
                 output = root / f"{mode}.xlsx"
-                write_workbook(output, workbook, backend=mode,
-                               writer="xlsxwriter" if mode in ("auto", "fast") else None)
+                write_workbook(output, workbook, backend=mode)
                 saved = read_workbook(output, include_metadata=True,
                                       backend="fast")
                 snapshots[mode] = (
