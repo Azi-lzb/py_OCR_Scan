@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 import time
@@ -20,7 +21,9 @@ ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) \
 # 冻结态：优先 exe 旁的 core\（发行包布局），否则用 exe 自身目录
 # （模板等运行时数据落在 exe 旁，随 exe 走）
 if getattr(sys, "frozen", False):
-    CORE = ROOT / "core" if (ROOT / "core").is_dir() else ROOT
+    core_override = os.environ.get("OCR_TOOLS_CORE_PATH")
+    CORE = (Path(core_override).expanduser().resolve() if core_override else
+            ROOT / "core" if (ROOT / "core").is_dir() else ROOT)
 else:
     CORE = ROOT / "core" if (ROOT / "core" / "src").is_dir() else ROOT.parent / "core"
 SRC = CORE / "src"

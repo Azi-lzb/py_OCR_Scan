@@ -61,14 +61,9 @@ def build() -> int:
         "--collect-all", "openpyxl",
         "--collect-all", "xlrd",
         "--collect-all", "xlsxwriter",
-        # 批量格式转换 COM（Excel/WPS/Word 引擎）
-        "--collect-all", "win32com",
-        "--collect-all", "pythoncom",
-        "--collect-all", "pywintypes",
         # 无框线表格模型（SLANet-Plus）与 PDF 渲染引擎
         "--collect-all", "rapid_table",
         "--collect-all", "pypdfium2",
-        "--hidden-import", "tkinter.filedialog",
         "--exclude-module", "torch",
         "--exclude-module", "pandas",
         "--exclude-module", "matplotlib",
@@ -82,6 +77,22 @@ def build() -> int:
         "--specpath", str(ROOT / "build"),
         str(ROOT / "run.py"),
     ]
+    if sys.platform == "win32":
+        # Excel/WPS/Word COM 与 Windows Tk 对话框仅在 Windows 壳打入。
+        args.extend([
+            "--collect-all", "win32com",
+            "--collect-all", "pythoncom",
+            "--collect-all", "pywintypes",
+            "--hidden-import", "tkinter.filedialog",
+        ])
+    elif sys.platform.startswith("linux"):
+        # Linux 包使用浏览器文件选择，不依赖 Tk 或 Windows COM。
+        args.extend([
+            "--exclude-module", "tkinter",
+            "--exclude-module", "win32com",
+            "--exclude-module", "pythoncom",
+            "--exclude-module", "pywintypes",
+        ])
     if importlib.util.find_spec("rustpy_xlsxwriter") is not None:
         args.extend(["--collect-all", "rustpy_xlsxwriter"])
     import PyInstaller.__main__

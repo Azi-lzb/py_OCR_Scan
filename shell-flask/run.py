@@ -15,8 +15,10 @@ ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) \
 # 打包态：exe 自身目录即工作根；开发态：core/ 与 shell 同级
 if getattr(sys, "frozen", False):
     # 发行包布局：exe 旁有 core\ 就用它（数据落 core/data）；
-    # 否则用 exe 自身目录（模板等数据随 exe 走）
-    CORE = ROOT / "core" if (ROOT / "core").is_dir() else ROOT
+    # Linux 安装包通过环境变量把用户数据放在 XDG_DATA_HOME，避免写 /opt。
+    core_override = os.environ.get("OCR_TOOLS_CORE_PATH")
+    CORE = (Path(core_override).expanduser().resolve() if core_override else
+            ROOT / "core" if (ROOT / "core").is_dir() else ROOT)
 elif (ROOT / "core" / "src").is_dir():
     CORE = ROOT / "core"
 else:

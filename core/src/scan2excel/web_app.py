@@ -12,6 +12,8 @@ import base64
 import os
 import queue
 import re
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -116,7 +118,8 @@ class WebApi:
             "high_accuracy": False,    # 高精度识别档（server rec 模型）
             "templates": [],           # 月计表模板名列表
             "scan_mode": "enhanced",   # 扫描件输出模式（enhanced/bw/gray/origin）
-            "file_picker_mode": "自动",  # 文件对话框：自动/系统原生/Tk 对话框/浏览器内置
+            "file_picker_mode": ("浏览器内置" if sys.platform.startswith("linux")
+                                 else "自动"),  # Linux 无桌面原生对话框时走浏览器选文件
             "scan_enabled": False,     # 扫描王开关（默认关，导航栏隐藏）
             "scan_busy": False,        # 扫描件生成中
             "scan_done": 0,            # 已生成的张数（进度）
@@ -1279,11 +1282,23 @@ class WebApi:
         """用系统默认程序打开文件；打不开则退回其所在文件夹。"""
         try:
             if os.path.isfile(path) and path.lower().endswith((".xlsx", ".docx")):
-                os.startfile(path)  # noqa: S606 —— Windows 本地工具
+                target = path
             elif os.path.isdir(path):
-                os.startfile(path)  # noqa: S606
+                target = path
             elif os.path.isfile(path):
-                os.startfile(str(Path(path).parent))  # noqa: S606
+                target = str(Path(path).parent)
+            else:
+                return False
+            if sys.platform == "win32":
+                os.startfile(target)  # noqa: S606 —— Windows 本地工具
+            elif sys.platform.startswith("linux"):
+                subprocess.Popen(["xdg-open", target], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", target], stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, start_new_session=True)
+            else:
+                return False
             return True
         except Exception:
             return False
@@ -1588,7 +1603,10 @@ class WebApi:
         multi = kind == "sources"
         flt = ("数据文件 (*.xls;*.xlsx;*.xlsm)",)
         paths: List[str] = []
-        if self._window is not None:
+        picker = self._picker_mode()
+        if picker == "浏览器内置":
+            return self.state
+        if picker == "系统原生" and self._window is not None:
             try:
                 paths = [str(x) for x in (_sta_open_dialog(flt, allow_multiple=multi) or [])
                          if str(x).strip()]
@@ -1597,8 +1615,10 @@ class WebApi:
                 raise RuntimeError(
                     f"原生文件对话框不可用（{e}）。"
                     "可在设置页把「文件对话框」切换为「浏览器内置」") from e
-        else:
+        elif picker == "Tk 对话框" or self._window is None:
             paths = _tk_open_data(multi=multi)
+        else:
+            return self.state
         if not paths:
             return self.state
         target = self.state["ts" if mode == "国库数据校验归集" else "ac"]
@@ -1793,7 +1813,10 @@ class WebApi:
         else:
             raise RuntimeError(f"未知工具文件类别：{kind}")
         paths: List[str] = []
-        if self._window is not None:
+        picker = self._picker_mode()
+        if picker == "浏览器内置":
+            return self.state
+        if picker == "系统原生" and self._window is not None:
             try:
                 paths = [str(p) for p in (_sta_open_dialog(flt, allow_multiple=True) or [])
                          if str(p).strip()]
@@ -1802,7 +1825,7 @@ class WebApi:
                 raise RuntimeError(
                     f"原生文件对话框不可用（{e}）。"
                     "可在设置页把「文件对话框」切换为「浏览器内置」") from e
-        else:
+        elif picker == "Tk 对话框" or self._window is None:
             paths = _tk_open_data(f"选择要转换的{'表格' if kind == 'excel' else '文档'}",
                                   multi=True)
         if paths:
@@ -1816,6 +1839,8 @@ class WebApi:
 
     def tool_convert(self, kind: str) -> Dict[str, Any]:
         """批量转换（在 COM 专用线程执行，自动 CoInitialize）。"""
+        if sys.platform != "win32":
+            raise RuntimeError("批量 Office/WPS 格式转换目前需要 Windows 环境；Linux 版不包含 COM 引擎")
         from .office_convert import run_excel_convert, run_word_convert
         tool = self.state["tool"]
         if kind == "excel":
@@ -1846,6 +1871,8 @@ class WebApi:
 
     def set_file_picker_mode(self, mode: str) -> Dict[str, Any]:
         if mode in self.PICKER_MODES:
+            if sys.platform.startswith("linux") and mode != "浏览器内置":
+                mode = "浏览器内置"
             self.state["file_picker_mode"] = mode
             self._log("文件对话框模式：" + mode)
         return self.state
@@ -1873,14 +1900,18 @@ class WebApi:
         return self.state
 
     def _picker_mode(self) -> str:
-        """解析生效模式：自动 = 有 pywebview 窗口用原生，否则 Tk。"""
+        """解析生效模式：Linux 自动使用浏览器文件选择，避免依赖 Tk/WinForms。"""
         mode = str(self.state.get("file_picker_mode") or "自动")
         if mode not in self.PICKER_MODES or mode == "自动":
+            if sys.platform.startswith("linux"):
+                return "浏览器内置"
             return "系统原生" if self._window is not None else "Tk 对话框"
         return mode
 
     def _dialog_open_images(self) -> List[str]:
         mode = self._picker_mode()
+        if mode == "浏览器内置":
+            return []  # 前端会先上传文件，再显式调用 add_image_paths
         if mode != "Tk 对话框" and self._window is not None:
             # 描述里不能有 / 等非 \w 字符——pywebview parse_file_type 会拒绝
             flt = ("图片或PDF (*.png;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff;"
@@ -1937,12 +1968,12 @@ class WebApi:
                           initialdir: str = "") -> str:
         _flt, _ext, tk_ft = self._SAVE_KINDS.get(kind, self._SAVE_KINDS["xlsx"])
         mode = self._picker_mode()
-        if mode == "Tk 对话框" or self._window is None:
-            return _tk_save_file(default_name, tk_ft, initialdir=initialdir)
         if mode == "浏览器内置":
             # 浏览器内置模式不弹窗：落到导出目录用默认名（路径会回显给用户）
             self._exports_dir.mkdir(parents=True, exist_ok=True)
             return str(self._exports_dir / default_name)
+        if mode == "Tk 对话框" or self._window is None:
+            return _tk_save_file(default_name, tk_ft, initialdir=initialdir)
         flt, _e2, _e3 = self._SAVE_KINDS.get(kind, self._SAVE_KINDS["xlsx"])
         try:
             return _sta_save_dialog(default_name, flt, directory=str(initialdir))
