@@ -77,6 +77,12 @@ def main() -> int:
             assert recalculated, "CalculateFullRebuild 应可用"
             assert method == "CalculateFullRebuild", method
             recalc_wb.Close(SaveChanges=False)
+
+            # Calculate() 必须不在降级链里：它只重算"脏"单元格，刚打开的簿没有
+            # 脏标记，会静默返回而不计算，还会骗过逐格比对。
+            import scan2excel.office_convert as oc
+            assert "Calculate" not in oc._RECALC_METHODS, oc._RECALC_METHODS
+            assert oc._RECALC_METHODS == ("CalculateFullRebuild", "CalculateFull")
         finally:
             try:
                 app.Quit()
@@ -98,6 +104,41 @@ def main() -> int:
         with zipfile.ZipFile(out) as archive:
             workbook_xml = archive.read("xl/workbook.xml").decode("utf-8")
         assert 'fullCalcOnLoad="1"' in workbook_xml, workbook_xml
+
+        # 校验不通过时不丢弃文件：照常另存并给出警告，公式文本保留，
+        # 用户打开工作簿即可重算（fullCalcOnLoad 已写入）。
+        from unittest.mock import patch
+        import scan2excel.office_convert as oc
+        with patch.object(oc, "_compare", return_value=["模拟：S!A3 不一致"]):
+            warned = run_excel_convert([stale], "xlsx")
+        assert warned["ok"] == 1, warned
+        assert warned["skip"] == 0, warned
+        assert warned["verify_failed"] == 1, warned
+        warned_item = warned["done"][0]
+        assert warned_item["warning"] is True, warned_item
+        assert warned_item["verified"] is False, warned_item
+        assert warned_item["problems"], warned_item
+        warned_out = Path(warned_item["out"])
+        assert warned_out.is_file(), "校验不通过也必须保留输出文件"
+        # 不留临时候选，目录里只有正式输出
+        leftovers = [p.name for p in warned_out.parent.iterdir() if ".converting" in p.name]
+        assert not leftovers, leftovers
+        with zipfile.ZipFile(warned_out) as archive:
+            warned_xml = archive.read("xl/workbook.xml").decode("utf-8")
+        assert 'fullCalcOnLoad="1"' in warned_xml, "警告文件也必须带重算标记"
+
+        # 重算失败 + 表内有公式 → 必须标记不可信（不能靠逐格比对放行：
+        # 源与候选读到同一份陈旧缓存，_compare 必然"一致"）。
+        from unittest.mock import patch as _patch
+        with _patch.object(oc, "_force_recalc", return_value=(False, "")), \
+             _patch.object(oc, "_compare", return_value=[]):
+            untrusted = run_excel_convert([stale], "xlsx")
+        assert untrusted["recalc_failed"] == 1, untrusted
+        assert untrusted["recalc_untrusted"] == 1, untrusted
+        assert untrusted["verified"] == 0, untrusted
+        item = untrusted["done"][0]
+        assert item["warning"] is True, item
+        assert any("重算失败" in p for p in item["problems"]), item
     finally:
         pythoncom.CoUninitialize()
 

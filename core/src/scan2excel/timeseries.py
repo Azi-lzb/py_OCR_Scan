@@ -274,14 +274,29 @@ def _write_back(ts: FastWorkbook, region: str,
                 cols: Dict[int, str],
                 orig_cols: Dict[int, str],
                 orig_vals: Dict[str, Dict[int, Any]],
-                new_rows: List[str]) -> None:
+                new_rows: List[str],
+                warnings: Optional[List[str]] = None) -> None:
     """把内存模型写回 region sheet：新月份列表头、新增指标行、值有变化的格。
 
     快照里同代码的副本行先删除（行号重新映射），合并后的值按首行实际值判断
-    是否落盘，避免删掉副本时把只在副本里的月份数据一起丢掉。"""
+    是否落盘，避免删掉副本时把只在副本里的月份数据一起丢掉。
+    warnings：表内有公式时跳过删行等保护性动作的提示，由调用方汇总展示。"""
+    if warnings is None:
+        warnings = []
     ws = ts[region] if region in ts.sheetnames else ts.create_sheet(region)
     ws.text_columns.add(1)   # 指标代码列：整列文本格式，补录后不再变数值
     drop = {r for ind in model.values() for r in ind.get("dups", [])}
+    if drop and ws.formula_cells:
+        # 删行会让公式文本里的单元格引用（=D4*2 之类）指错行，改写引用超出
+        # 本模块范围；宁可保留副本行并提示，也不静默写坏公式。
+        skip_rows = sorted(drop)
+        warnings.append(
+            f"{region}：表内有 {len(ws.formula_cells)} 个公式单元格，"
+            f"为避免公式引用错位，未删除第 {skip_rows[0]}"
+            f"~{skip_rows[-1]} 行的重复指标行，请人工确认")
+        for ind in model.values():
+            ind["dups"] = []
+        drop = set()
     if drop:
         renumber: Dict[int, int] = {}
         kept: List[List[Any]] = []
@@ -291,6 +306,11 @@ def _write_back(ts: FastWorkbook, region: str,
             renumber[old_row] = len(kept) + 1
             kept.append(values)
         ws.rows = kept
+        # 公式单元格按 (行, 列) 存，删行后必须跟着重映射，否则公式会写到错行。
+        ws.formula_cells = {
+            (renumber[row], col): formula
+            for (row, col), formula in ws.formula_cells.items()
+            if row in renumber}
         for ind in model.values():
             r = ind.get("row")
             if r in renumber:
@@ -325,7 +345,8 @@ def _write_back(ts: FastWorkbook, region: str,
                 ws.cell(r, c, v)
 
 
-def _merge_duplicate_rows(ts: FastWorkbook, models: Dict[str, Any]) -> List[str]:
+def _merge_duplicate_rows(ts: FastWorkbook, models: Dict[str, Any],
+                          warnings: Optional[List[str]] = None) -> List[str]:
     """把未参与本次归集的 sheet 里同代码的重复行也合并掉，返回清理过的地区名。
 
     旧版每次运行都会在表尾追加一整块文本代码的副本行，即使本次只归集了部分
@@ -343,7 +364,8 @@ def _merge_duplicate_rows(ts: FastWorkbook, models: Dict[str, Any]) -> List[str]
             continue
         orig_vals = {code: dict(ind.get("own", ind["vals"]))
                      for code, ind in indicators.items()}
-        _write_back(ts, title, indicators, cols, dict(cols), orig_vals, [])
+        _write_back(ts, title, indicators, cols, dict(cols), orig_vals, [],
+                    warnings)
         cleaned.append(title)
     return cleaned
 
@@ -490,7 +512,10 @@ def run_treasury(timeseries_path: Path, source_paths: List[Path],
     regions = cfg["regions"]
     wl = cfg["whitelist"].get("国库", set())
     ts_path = Path(timeseries_path)
-    ts = read_workbook(ts_path) if ts_path.is_file() else FastWorkbook()
+    # 必须带 include_metadata：时序表是用户自己的簿，整本重建时不能把
+    # 其中的公式/命名区域/条件格式降级成静态值。
+    ts = (read_workbook(ts_path, include_metadata=True)
+          if ts_path.is_file() else FastWorkbook())
 
     issues: List[List[Any]] = []
     logs: List[List[Any]] = []
@@ -568,9 +593,12 @@ def run_treasury(timeseries_path: Path, source_paths: List[Path],
                                    v, 0, "", v, v, "国库校验", ts_path.name,
                                    datetime.now()])
 
+    warnings: List[str] = []
     for region, (cols, indicators, orig_cols, orig_vals, new_rows) in models.items():
-        _write_back(ts, region, indicators, cols, orig_cols, orig_vals, new_rows)
-    stats["dedup_sheets"] = _merge_duplicate_rows(ts, models)
+        _write_back(ts, region, indicators, cols, orig_cols, orig_vals, new_rows,
+                    warnings)
+    stats["dedup_sheets"] = _merge_duplicate_rows(ts, models, warnings)
+    stats["dedup_warnings"] = warnings
     _normalize_code_column(ts)
     if "log" in ts.sheetnames:
         del ts["log"]
@@ -678,7 +706,10 @@ def run_accounting(timeseries_path: Path, source_paths: List[Path],
     fee_codes = {c for c, _f, _col in bmap}
     zero_watch = fee_codes | set(parents)
     ts_path = Path(timeseries_path)
-    ts = read_workbook(ts_path) if ts_path.is_file() else FastWorkbook()
+    # 必须带 include_metadata：时序表是用户自己的簿，整本重建时不能把
+    # 其中的公式/命名区域/条件格式降级成静态值。
+    ts = (read_workbook(ts_path, include_metadata=True)
+          if ts_path.is_file() else FastWorkbook())
 
     issues: List[List[Any]] = []
     logs: List[List[Any]] = []
@@ -845,9 +876,12 @@ def run_accounting(timeseries_path: Path, source_paths: List[Path],
                                    v, 0, "", v, v, "会计校验", ts_path.name,
                                    datetime.now()])
 
+    warnings: List[str] = []
     for region, (cols, indicators, orig_cols, orig_vals, new_rows) in models.items():
-        _write_back(ts, region, indicators, cols, orig_cols, orig_vals, new_rows)
-    stats["dedup_sheets"] = _merge_duplicate_rows(ts, models)
+        _write_back(ts, region, indicators, cols, orig_cols, orig_vals, new_rows,
+                    warnings)
+    stats["dedup_sheets"] = _merge_duplicate_rows(ts, models, warnings)
+    stats["dedup_warnings"] = warnings
     _normalize_code_column(ts)
     if "log" in ts.sheetnames:
         del ts["log"]

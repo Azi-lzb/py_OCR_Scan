@@ -62,6 +62,9 @@ def build() -> int:
         # Excel 数据读取（Calamine Rust 扩展）与快速写入器
         "--collect-all", "python_calamine",
         "--collect-all", "openpyxl",
+        # openpyxl 的保存依赖 et_xmlfile；collect-all 不递归依赖，漏了
+        # 打包版一写 xlsx 就 ImportError（et_xmlfile 不在 venv 之外）。
+        "--collect-all", "et_xmlfile",
         "--collect-all", "xlrd",
         "--collect-all", "xlsxwriter",
         # 批量格式转换 COM（Excel/WPS/Word 引擎）

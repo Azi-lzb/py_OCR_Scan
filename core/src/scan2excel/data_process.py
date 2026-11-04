@@ -383,7 +383,9 @@ def append_to_target(target_wb: Path, target_sheet: str, header: List[str],
     tw = Path(target_wb)
     if tw.is_file():
         try:
-            twb = read_workbook(tw)
+            # 必须带 include_metadata：否则读不到公式/命名区域/条件格式，
+            # 整簿重写时主表公式会被当成静态值写死。
+            twb = read_workbook(tw, include_metadata=True)
         except Exception as e:
             raise RuntimeError(
                 f"目标工作簿无法读取（文件损坏或格式不对）：{tw} —— {e}")
@@ -415,6 +417,28 @@ def append_to_target(target_wb: Path, target_sheet: str, header: List[str],
             if not new_rows:
                 twb.close()
                 return stat
+            twb.close()
+            # 写入用 openpyxl 就地追加：成熟稳妥，保留公式、批注、样式、主题，
+            # 不重建整本工作簿。openpyxl 唯一的代价是保存时清空公式缓存值
+            # （<f>+E3</f><v></v>），写完再把缓存值补回去。
+            from .ooxml_patch import append_rows_openpyxl
+            same_header = merged_cols == old_header
+            ok, detail = append_rows_openpyxl(
+                tw, target_sheet, new_rows,
+                extend_header=merged_cols if not same_header else None)
+            stat["mode"] = "openpyxl" if ok else "rebuild"
+            stat["detail"] = detail
+            if ok:
+                stat["written"] = True
+                return stat
+            # 兜底：openpyxl 不可用或目标簿读不了时，才回到整本重建
+            twb = read_workbook(tw, include_metadata=True)
+            tws = twb[target_sheet]
+            old_rows = []
+            for r in tws.rows[1:]:
+                if all(v in (None, "") for v in r):
+                    continue
+                old_rows.append(list(r) + [""] * (len(merged_cols) - len(r)))
             idx = twb.sheetnames.index(target_sheet)
             twb.remove(tws)
             tws = FastWorksheet(target_sheet, [merged_cols] + old_rows + new_rows)

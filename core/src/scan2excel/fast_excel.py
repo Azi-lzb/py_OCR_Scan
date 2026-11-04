@@ -535,7 +535,16 @@ def _write_xlsxwriter(path: Path, workbook: FastWorkbook) -> None:
                         continue
                     formula = data.formula_cells.get((r + 1, c + 1))
                     if formula:
-                        ws.write_formula(r, c, formula)
+                        # 带上读到的缓存值，否则 XlsxWriter 默认写 0，外部工具
+                        # （calamine 等）按缓存读取主表会看到一片 0。
+                        if isinstance(value, bool):
+                            ws.write_formula(r, c, formula, None, value)
+                        elif isinstance(value, (int, float)):
+                            ws.write_formula(r, c, formula, None, value)
+                        elif isinstance(value, str) and value:
+                            ws.write_formula(r, c, formula, None, value)
+                        else:
+                            ws.write_formula(r, c, formula)
                     elif value is None or value == "":
                         continue
                     elif isinstance(value, datetime):

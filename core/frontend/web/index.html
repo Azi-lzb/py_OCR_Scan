@@ -219,6 +219,7 @@ header .spacer{flex:1;}
 .chk-table td{padding:4px 8px; border:1px solid var(--border); word-break:break-all;}
 .chk-wl td{background:#92D05033;}
 .chk-err td{background:#FFC7CE55;}
+span.chk-err{color:#c0392b;}
 .chk-bf td{background:#FFFFCC66;}
 .src-del:hover{color:#c0392b; background:var(--accent-soft);}
 .plink{color:var(--accent);text-decoration:underline;cursor:pointer;}
@@ -2036,11 +2037,24 @@ function renderTools(){
     toast("转换中…");
     api("tool_convert", m).then(function(res){
       var lines = [];
-      (res.done || []).forEach(function(d){ lines.push("✓ " + esc(d.out)); });
+      (res.done || []).forEach(function(d){
+        if(d.warning){
+          var detail = (d.problems || []).slice(0, 3).join("；");
+          lines.push('<span class="chk-err">⚠ ' + esc(d.out)
+            + "（校验未通过：公式已保留，请打开工作簿重算核对）"
+            + (detail ? "<br>&nbsp;&nbsp;&nbsp;&nbsp;" + esc(detail) : "") + "</span>");
+        } else {
+          lines.push("✓ " + esc(d.out));
+        }
+      });
       (res.skipped || []).forEach(function(s){ lines.push("✗ " + esc(s.src) + "（" + esc(s.reason) + "）"); });
+      var warn = res.verify_failed || 0;
       $("tlResult").innerHTML = "成功 " + res.ok + "、跳过 " + res.skip
-        + "（引擎 " + esc(res.engine || "-") + "）<br>" + lines.join("<br>");
-      toast("批量转换完成：成功 " + res.ok, res.ok > 0 ? "ok" : "err");
+        + "（引擎 " + esc(res.engine || "-") + "）"
+        + (warn ? '　<span class="chk-err">其中 ' + warn + " 个校验不一致，已照常另存</span>" : "")
+        + "<br>" + lines.join("<br>");
+      toast(warn ? ("转换完成，但 " + warn + " 个文件校验不一致，请打开核对")
+                 : ("批量转换完成：成功 " + res.ok), warn ? "err" : (res.ok > 0 ? "ok" : "err"));
       renderTools();
     }).catch(function(e){ toast(e.message || String(e), "err"); renderTools(); });
   });
@@ -2049,7 +2063,9 @@ function renderTools(){
 /* ================= 数据处理：校验明细表 ================= */
 function dedupNote(res){
   var sheets = (res && res.dedup_sheets) || [];
-  return sheets.length ? ("；已合并重复指标行：" + sheets.join("、")) : "";
+  var note = sheets.length ? ("；已合并重复指标行：" + sheets.join("、")) : "";
+  ((res && res.dedup_warnings) || []).forEach(function(w){ note += "；" + w; });
+  return note;
 }
 function chkRowsHtml(rows){
   if(!rows || !rows.length) return "";

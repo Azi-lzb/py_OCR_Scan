@@ -99,14 +99,18 @@ def _start_word_app():
 
 
 # ---------------------------------------------------------------- 强制计算 + 校验
-def _force_recalc(app) -> Tuple[bool, str]:
-    """转换前强制全量重算，返回 (是否成功, 实际调用的方法名)。
+#: 重算方法降级链。**不要加 Calculate**：它只重算被标记为脏的单元格，刚打开的
+#: 工作簿没有任何脏标记，于是静默返回、什么也不算。更糟的是它能骗过校验——
+#: 源快照和候选快照读到同一份陈旧值，_compare 逐格一致，verified 为真，而下游
+#: calamine 仍然读到旧缓存。实测（Excel 公式 =A1*3+4，缓存改成 999）：
+#: Calculate → 999（无效），CalculateFull → 34，CalculateFullRebuild → 34。
+#: 两个有效方法都只挂在 Application 上，Workbook 没有这些成员。
+_RECALC_METHODS = ("CalculateFullRebuild", "CalculateFull")
 
-    源文件若存成 calcMode="manual" 且带有效 calcId，Excel 打开时不会重算，
-    SaveAs 会把过期的公式缓存值原样写进输出文件（实测 999 就是 999）。
-    CalculateFullRebuild 重建依赖链并重算全部公式，比 CalculateFull/Calculate
-    更彻底；它只在 Application 上，Workbook 上没有该成员。"""
-    for name in ("CalculateFullRebuild", "CalculateFull", "Calculate"):
+
+def _force_recalc(app) -> Tuple[bool, str]:
+    """转换前强制全量重算，返回 (是否成功, 实际调用的方法名)。"""
+    for name in _RECALC_METHODS:
         try:
             getattr(app, name)()
             return True, name
@@ -116,14 +120,27 @@ def _force_recalc(app) -> Tuple[bool, str]:
 
 
 def _matrix(value: Any, rows: int, columns: int) -> List[Any]:
-    """COM 批量读取返回值：单格是标量，单行/单列是一维，其余是二维。"""
+    """把 COM 批量读取的返回值规整成 rows×columns 的二维列表。
+
+    注意 pywin32 的行为：单列区域返回的**不是**一维序列，而是每行一个 1 元
+    组的元组（如 (('1',), ('2',))）。若按一维处理会得到 [[('1',)], ...]，
+    列数错位、公式识别全部落空——单列 UsedRange 的表现在很常见。"""
     if rows == 1 and columns == 1:
         return [[value]]
+    values = list(value)
     if rows == 1:
-        return [list(value)]
+        first = values[0] if values else None
+        if isinstance(first, (tuple, list)):
+            return [list(first)]
+        return [values]
     if columns == 1:
-        return [[item] for item in value]
-    return [list(row) for row in value]
+        first = values[0] if values else None
+        if isinstance(first, (tuple, list)):
+            return [list(item) for item in values]
+        return [[item] for item in values]
+    if values and not isinstance(values[0], (tuple, list)):
+        return [[item] for item in values]
+    return [list(row) for row in values]
 
 
 def _column_name(column: int) -> str:
@@ -300,6 +317,7 @@ def run_excel_convert(files: List[Path], target_ext: str) -> Dict[str, Any]:
     stats: Dict[str, Any] = {"target": ext, "ok": 0, "skip": len(skipped),
                              "skipped": skipped, "done": [], "engine": "",
                              "recalc": 0, "recalc_failed": 0, "recalc_method": "",
+                             "recalc_untrusted": 0,
                              "verified": 0, "verify_failed": 0, "verify_detail": []}
     if not plan:
         return stats
@@ -308,7 +326,8 @@ def run_excel_convert(files: List[Path], target_ext: str) -> Dict[str, Any]:
     stats["engine"] = engine
     try:
         for src, out in plan:
-            # 先写临时候选，校验通过再改名到最终路径，失败不留半成品。
+            # 先写临时候选，确认 SaveAs 成功后再改名到最终路径；校验不通过也照常
+            # 发布（只做警告），真正失败（打不开/存不出）才丢弃临时文件。
             candidate = out.with_name(f".{out.stem}.converting{out.suffix}")
             try:
                 if candidate.exists():
@@ -322,6 +341,7 @@ def run_excel_convert(files: List[Path], target_ext: str) -> Dict[str, Any]:
                                 f"扩展名是 {src.suffix}，但实际打开为 FileFormat "
                                 f"{file_format}，不是 WPS 原生表格")
                     snapshot = None
+                    problems: List[str] = []
                     if ext != "csv":          # CSV 没有公式，不做重算与逐格比对
                         ok, method = _force_recalc(app)
                         if ok:
@@ -330,24 +350,45 @@ def run_excel_convert(files: List[Path], target_ext: str) -> Dict[str, Any]:
                         else:
                             stats["recalc_failed"] += 1
                         snapshot = _snapshot(wb)
+                        has_formulas = any(sheet["formulas"] for sheet in snapshot)
+                        if not ok and has_formulas:
+                            # 重算失败且表里有公式：缓存值不可信。这时不能靠
+                            # _compare 放行——源与候选读到的是同一份陈旧值，
+                            # 逐格比对必然"一致"，会把旧缓存当成正确结果发布。
+                            problem = (f"强制重算失败（{has_formulas and '表内有公式'}），"
+                                       "公式缓存值未经重算，结果不可信；"
+                                       "请打开该工作簿让 Excel/WPS 重新计算后核对")
+                            stats["recalc_untrusted"] += 1
+                            problems.append(problem)
+                            stats["verify_detail"].append({"src": str(src),
+                                                           "out": str(out),
+                                                           "problems": [problem]})
                     wb.SaveAs(str(candidate), FileFormat=EXCEL_FMT_MAP[ext],
                               CreateBackup=False)
                 finally:
                     wb.Close(SaveChanges=False)
 
-                if snapshot is not None:
+                # 重算失败但表内无公式时 problems 为空，属于无害情况（没有缓存
+                # 值可担心）；有公式则已在上面记入 problems，不会被放行。
+                if snapshot is not None and not problems:
                     problems = _verify_candidate(app, candidate, snapshot)
                     if problems:
                         stats["verify_failed"] += 1
                         stats["verify_detail"].append({"src": str(src),
+                                                       "out": str(out),
                                                        "problems": problems[:8]})
-                        raise ValueError("转换后校验不一致：" + "；".join(problems[:3]))
-                    stats["verified"] += 1
+                    else:
+                        stats["verified"] += 1
+                # 校验不通过也照常发布：公式文本已完整保留，用户打开工作簿重算
+                # 即可拿回正确值；直接删除只会让人还得重新转换一遍。fullCalcOnLoad
+                # 标记保证 Excel/WPS 下次打开时自动全量重算。
                 _mark_full_calc_on_load(candidate)
                 candidate.replace(out)
                 stats["ok"] += 1
                 stats["done"].append({"src": str(src), "out": str(out),
-                                      "verified": snapshot is not None})
+                                      "verified": bool(snapshot) and not problems,
+                                      "warning": bool(problems),
+                                      "problems": problems[:8]})
             except Exception as e:
                 stats["skip"] += 1
                 stats["skipped"].append({"src": str(src), "reason": f"转换失败：{e}"})

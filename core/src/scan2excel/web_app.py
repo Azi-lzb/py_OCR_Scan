@@ -1650,7 +1650,10 @@ class WebApi:
     def _dedup_note(self, res: Dict[str, Any]) -> str:
         """旧版重复指标行被清理时在日志里留痕，避免用户以为表被改动。"""
         sheets = res.get("dedup_sheets") or []
-        return f"；已合并重复指标行：{'、'.join(sheets)}" if sheets else ""
+        note = f"；已合并重复指标行：{'、'.join(sheets)}" if sheets else ""
+        for warn in res.get("dedup_warnings") or []:
+            note += f"；{warn}"
+        return note
 
     def _ts_run_inner(self) -> Dict[str, Any]:
         from .timeseries import run_treasury
@@ -1878,10 +1881,17 @@ class WebApi:
                            + (f"（{res['recalc_failed']} 个重算失败）"
                               if res.get("recalc_failed") else "")
                            + f"，转换后逐格校验 {res.get('verified', 0)} 个"
-                           + (f"（{res['verify_failed']} 个不一致未发布）"
-                              if res.get("verify_failed") else ""))
+                           + (f"（{res['verify_failed']} 个校验不一致，已照常另存，"
+                              "请自行打开重算核对）"
+                              if res.get("verify_failed") else "")
+                           + (f"，{res['recalc_untrusted']} 个因重算失败缓存不可信"
+                              if res.get("recalc_untrusted") else ""))
         self._log(f"转换完成：成功 {res['ok']}，跳过 {res['skip']}"
                   f"（引擎 {res['engine']}{recalc_note}）")
+        for item in res.get("verify_detail") or []:
+            self._log(f"  [需人工核对] {Path(item['src']).name} → "
+                      f"{Path(item.get('out') or item['src']).name}："
+                      + "；".join(item.get("problems") or []))
         res["ok"] = True
         return res
 
