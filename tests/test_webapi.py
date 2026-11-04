@@ -209,6 +209,23 @@ def main() -> int:
     assert st["high_accuracy"] is False
     print("✅ 高精度档接口可用（当前未启用，不触发模型下载）")
 
+    # 9c) 工具页格式下拉：TOOL_EXCEL_FMTS/TOOL_WORD_FMTS 曾被打包重构误删，
+    #     导致 tool_set_format 直接 AttributeError（前端下拉一改就 500）。
+    assert api.tool_set_mode("excel")["tl_mode"] == "excel"
+    for fmt in ("xlsx", "xlsm", "xls", "csv"):
+        assert api.tool_set_format("excel", fmt)["tool"]["excel_fmt"] == fmt
+    assert api.tool_set_mode("word")["tl_mode"] == "word"
+    for fmt in ("docx", "doc"):
+        assert api.tool_set_format("word", fmt)["tool"]["word_fmt"] == fmt
+    for kind, fmt in (("excel", "docx"), ("word", "xlsx"), ("excel", "pdf")):
+        try:
+            api.tool_set_format(kind, fmt)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(f"应拒绝 {kind} → {fmt}")
+    print("✅ tool_set_format：Excel/Word 格式白名单与非法格式拒绝")
+
     # 10) 删除/清空（3 张原始 + PDF 展开 2 页 = 5 张）
     st = api.remove_image(0)
     assert len(st["images"]) == 4

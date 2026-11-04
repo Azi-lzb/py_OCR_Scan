@@ -9,6 +9,8 @@
 
 # ==== 运行时数据（PID、上传缓存等，可随时重建）====
 /core/data/
+/data/config/
+/data/exports/
 
 # ==== 测试产物（图片与真值入库，中间产物不入）====
 /tests/data/_pdf_pages/

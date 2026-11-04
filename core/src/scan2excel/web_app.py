@@ -1786,6 +1786,11 @@ class WebApi:
             return self._ac_run_inner(do_backfill=True)
         finally:
             self._dp_busy = False
+
+    # 工具页可选目标格式（tool_set_format 的校验白名单）
+    TOOL_EXCEL_FMTS = ("xlsx", "xlsm", "xls", "csv")
+    TOOL_WORD_FMTS = ("docx", "doc")
+
     def tool_set_files(self, kind: str, paths: List[str]) -> Dict[str, Any]:
         """设置工具页文件列表（kind=excel/word）。"""
         key = f"{kind}_files"
@@ -1867,7 +1872,16 @@ class WebApi:
         else:
             raise RuntimeError(f"未知转换类别：{kind}")
         self._save_last_paths()
-        self._log(f"转换完成：成功 {res['ok']}，跳过 {res['skip']}（引擎 {res['engine']}）")
+        recalc_note = ""
+        if kind == "excel":
+            recalc_note = (f"，强制重算 {res.get('recalc', 0)} 个"
+                           + (f"（{res['recalc_failed']} 个重算失败）"
+                              if res.get("recalc_failed") else "")
+                           + f"，转换后逐格校验 {res.get('verified', 0)} 个"
+                           + (f"（{res['verify_failed']} 个不一致未发布）"
+                              if res.get("verify_failed") else ""))
+        self._log(f"转换完成：成功 {res['ok']}，跳过 {res['skip']}"
+                  f"（引擎 {res['engine']}{recalc_note}）")
         res["ok"] = True
         return res
 
