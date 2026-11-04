@@ -49,6 +49,28 @@ def _norm(s) -> str:
     return str(s or "").strip()
 
 
+def _code_norm(value) -> str:
+    """代码类单元格归一成稳定文本：11344.0 → "11344"，11344 → "11344"。
+
+    源表里同一列常混着文本和数值（'11347' 与 11344.0），直接 str() 会让数值
+    变成 '11344.0'，写进「行头路径」「科目代码」后与其它月份的 '11344' 对不上，
+    去重和跨月比对都会失效。"""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return repr(value)
+    if isinstance(value, int):
+        return str(value)
+    text = str(value).strip()
+    if re.fullmatch(r"[-+]?\d+\.0+", text):
+        return text.split(".")[0]
+    return text
+
+
 def load_rules(config_xlsx: Optional[Path]) -> List[Dict[str, Any]]:
     """读 config.xlsx「时序规则」sheet；没有则返回内置默认规则。"""
     rules: List[Dict[str, Any]] = []
@@ -391,6 +413,28 @@ def append_to_target(target_wb: Path, target_sheet: str, header: List[str],
                 f"目标工作簿无法读取（文件损坏或格式不对）：{tw} —— {e}")
         if target_sheet in twb.sheetnames:
             tws = twb[target_sheet]
+            has_content = any(any(v not in (None, "") for v in row)
+                              for row in tws.rows)
+            if not has_content:
+                # 空表（用户清空了整张表）：按新表处理，写表头 + 全部批内行，
+                # 而不是报 header_mismatch。用户清空目标表就是为了重新灌数据。
+                twb.close()
+                from .ooxml_patch import append_rows_openpyxl
+                ok, detail = append_rows_openpyxl(tw, target_sheet, batch,
+                                                  header=header)
+                stat["added"] = len(batch)
+                stat["mode"] = "openpyxl" if ok else "rebuild"
+                stat["detail"] = detail
+                if ok:
+                    stat["written"] = True
+                    return stat
+                twb = read_workbook(tw, include_metadata=True)
+                tws = twb[target_sheet]
+                idx = twb.sheetnames.index(target_sheet)
+                twb.remove(tws)
+                twb.add_sheet(FastWorksheet(target_sheet, [header] + batch), idx)
+                stat["written"] = True
+                return stat
             old_header = [_norm(v) for v in (tws.rows[0] if tws.rows else [])]
             if any(c not in old_header for c in required_prefix):
                 twb.close()
@@ -423,9 +467,12 @@ def append_to_target(target_wb: Path, target_sheet: str, header: List[str],
             # （<f>+E3</f><v></v>），写完再把缓存值补回去。
             from .ooxml_patch import append_rows_openpyxl
             same_header = merged_cols == old_header
+            # columns 用来定位「行头路径」「科目代码」这类必须存文本的列；
+            # 它始终是目标表的实际列名（扩列时含新列），与 extend_header 无关。
             ok, detail = append_rows_openpyxl(
                 tw, target_sheet, new_rows,
-                extend_header=merged_cols if not same_header else None)
+                extend_header=merged_cols if not same_header else None,
+                columns=merged_cols)
             stat["mode"] = "openpyxl" if ok else "rebuild"
             stat["detail"] = detail
             if ok:
@@ -530,7 +577,8 @@ def wide_summary(source_path: Path, rules: List[Dict[str, Any]],
                 hv = ws.cell(r, rh_col).value
                 if hv in (None, ""):
                     hv = anchor.get((r, rh_col))
-                row_head = _norm(hv)
+                # 行头多为科目/指标代码，源表混着文本和数值（'11347' vs 11344.0）
+                row_head = _code_norm(hv)
                 if not row_head or any(k in row_head for k in skip_kw):
                     continue
                 vals = {}

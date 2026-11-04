@@ -11,6 +11,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "core" / "src"))
 
 import xlsxwriter
+from openpyxl.styles import Side
 
 from scan2excel.data_process import append_to_target
 from scan2excel.fast_excel import read_workbook
@@ -51,7 +52,8 @@ def _make_target(path: Path) -> None:
 
 def main() -> int:
     with tempfile.TemporaryDirectory() as td:
-        target = Path(td) / "国库报表.xlsx"
+        root = Path(td)
+        target = root / "国库报表.xlsx"
         _make_target(target)
 
         before = read_workbook(target, include_metadata=True)
@@ -120,8 +122,112 @@ def main() -> int:
         final = read_workbook(target, include_metadata=True)
         assert final["主表"].formula_cells == before_formulas
 
+        _check_cleared_target(root)
+        _check_code_columns_text(root)
+
     print("test_target_formulas OK")
     return 0
+
+
+def _check_cleared_target(root: Path) -> None:
+    """用户清空目标表后应能正常写入。
+
+    两个曾经踩过的坑：
+    1) 整表清空（连表头）时 old_header 为空 → 误报 header_mismatch，
+       用户清空目标表本来就是为了重新灌数据。
+    2) 只清内容、保留边框时 openpyxl 的 max_row 仍算到格式行（实测 50），
+       按 max_row+1 会把数据追加到第 51 行，看起来"显示新增了行但表里没有"。
+    """
+    from openpyxl import Workbook, load_workbook
+
+    header = ["工作簿名", "工作表名", "数据日期", "行头路径",
+              "本期余额_借方", "科目代码_科目代码"]
+    required = ["工作簿名", "工作表名", "数据日期", "行头路径"]
+    dedup = ["数据日期", "行头路径"]
+    rows = [[f"wb{i}", "sh", "2026-10-01", f"p{i}", i, f"1100{i}"]
+            for i in range(3)]
+
+    # 场景 1：完全空表（连表头都没有）
+    blank = root / "blank_target.xlsx"
+    book = Workbook()
+    book.active.title = "源数据时序"
+    book.save(blank)
+    stat = append_to_target(blank, "源数据时序", header, rows, dedup, required)
+    assert stat["written"] and stat["added"] == 3, stat
+    sheet = load_workbook(blank)["源数据时序"]
+    assert sheet.max_row == 4, sheet.max_row
+    assert sheet.cell(1, 1).value == "工作簿名", "空表必须先写表头"
+    assert sheet.cell(2, 1).value == "wb0", "数据应从第 2 行开始"
+
+    # 场景 2：数据被清空但保留格式（openpyxl max_row 仍很大）
+    formatted = root / "formatted_target.xlsx"
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "源数据时序"
+    for column, value in enumerate(header, 1):
+        sheet.cell(1, column, value)
+    for row_index in range(2, 51):
+        sheet.cell(row_index, 1, f"old{row_index}")
+        sheet.cell(row_index, 1).border = Side(style="thin")
+    book.save(formatted)
+    book = load_workbook(formatted)
+    sheet = book["源数据时序"]
+    for row_index in range(2, 51):
+        sheet.cell(row_index, 1).value = None     # 只清值，保留边框
+    book.save(formatted)
+    assert load_workbook(formatted)["源数据时序"].max_row >= 50, "前提：格式行仍占位"
+
+    stat = append_to_target(formatted, "源数据时序", header, rows, dedup, required)
+    assert stat["written"] and stat["added"] == 3, stat
+    sheet = load_workbook(formatted)["源数据时序"]
+    written_at = [r for r in range(1, sheet.max_row + 1)
+                  if sheet.cell(r, 1).value == "wb0"]
+    assert written_at == [2], f"数据被写到格式行之后：第 {written_at} 行"
+
+
+def _check_code_columns_text(root: Path) -> None:
+    """「行头路径」「科目代码」必须存成文本。
+
+    源表同一列常混着文本和数值（'11347' 与 11344.0）。若写成数值，Excel 显示
+    11344，读回来与 '11344' 对不上，去重和跨月比对都会失效。"""
+    from openpyxl import Workbook, load_workbook
+
+    header = ["工作簿名", "数据日期", "行头路径", "本期余额_借方",
+              "科目代码_科目代码"]
+    required = ["工作簿名", "数据日期", "行头路径"]
+    path = root / "code_text.xlsx"
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "源数据时序"
+    for column, value in enumerate(header, 1):
+        sheet.cell(1, column, value)
+    sheet.cell(2, 1, "old")
+    sheet.cell(2, 2, "2026-09-01")
+    sheet.cell(2, 3, "999")          # 已有行保持原样
+    book.save(path)
+
+    rows = [
+        ["wb", "2026-11-01", 11344.0, 1.0, 11344.0],   # 数值代码
+        ["wb", "2026-11-01", "11347", 2.0, "11347"],   # 文本代码
+        ["wb", "2026-11-01", "1123P", 3.0, "1123P"],   # 字母结尾
+    ]
+    stat = append_to_target(path, "源数据时序", header, rows,
+                            ["数据日期", "行头路径"], required)
+    assert stat["written"] and stat["added"] == 3, stat
+
+    sheet = load_workbook(path)["源数据时序"]
+    for row_index, expected in ((3, "11344"), (4, "11347"), (5, "1123P")):
+        for column in (3, 5):
+            cell = sheet.cell(row_index, column)
+            assert isinstance(cell.value, str), (
+                f"({row_index},{column}) 不是文本：{cell.value!r}")
+            assert cell.number_format == "@", (
+                f"({row_index},{column}) 缺少文本格式：{cell.number_format}")
+        assert sheet.cell(row_index, 3).value == expected, (
+            f"行头路径未归一：{sheet.cell(row_index, 3).value!r} != {expected!r}")
+    # 数值 11344.0 必须落成 '11344'，不能是 '11344.0'
+    assert sheet.cell(3, 3).value == "11344", sheet.cell(3, 3).value
+    assert sheet.cell(3, 5).value == "11344", sheet.cell(3, 5).value
 
 
 if __name__ == "__main__":
