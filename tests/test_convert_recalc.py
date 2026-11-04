@@ -100,10 +100,26 @@ def main() -> int:
         after = load_workbook(out, data_only=True)["S"]["A3"].value
         assert after == 3, f"输出仍带过期缓存：{after}"
 
+        # 转出的 xlsx 必须是"已计算好"的版本：缓存值就是重算结果，
+        # 下游 calamine 之类按缓存读取也能拿到正确数字。
+        from python_calamine import CalamineWorkbook
+        with CalamineWorkbook.from_path(out) as raw:
+            cached_rows = raw.get_sheet_by_name("S").to_python(skip_empty_area=False)
+        assert cached_rows[2][0] == 3, f"calamine 读到过期缓存：{cached_rows[2]}"
+
         # 输出应带 fullCalcOnLoad 标记，外部引擎再次打开时会全量重算
         with zipfile.ZipFile(out) as archive:
             workbook_xml = archive.read("xl/workbook.xml").decode("utf-8")
         assert 'fullCalcOnLoad="1"' in workbook_xml, workbook_xml
+
+        # CSV 也存公式显示值：源是手动计算模式时若不重算，会把陈旧缓存导出去
+        # （实测应为 3 却写出 999）。CSV 无单元格结构，只重算、不做逐格比对。
+        csv_res = run_excel_convert([stale], "csv")
+        assert csv_res["ok"] == 1, csv_res
+        assert csv_res["recalc"] == 1, csv_res
+        csv_out = Path(csv_res["done"][0]["out"])
+        csv_rows = csv_out.read_text(encoding="utf-8-sig").splitlines()
+        assert csv_rows[2] == "3", f"CSV 导出了陈旧缓存：{csv_rows}"
 
         # 校验不通过时不丢弃文件：照常另存并给出警告，公式文本保留，
         # 用户打开工作簿即可重算（fullCalcOnLoad 已写入）。

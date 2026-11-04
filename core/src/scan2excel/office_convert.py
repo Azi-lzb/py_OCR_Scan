@@ -342,26 +342,28 @@ def run_excel_convert(files: List[Path], target_ext: str) -> Dict[str, Any]:
                                 f"{file_format}，不是 WPS 原生表格")
                     snapshot = None
                     problems: List[str] = []
-                    if ext != "csv":          # CSV 没有公式，不做重算与逐格比对
-                        ok, method = _force_recalc(app)
-                        if ok:
-                            stats["recalc"] += 1
-                            stats["recalc_method"] = method
-                        else:
-                            stats["recalc_failed"] += 1
-                        snapshot = _snapshot(wb)
-                        has_formulas = any(sheet["formulas"] for sheet in snapshot)
-                        if not ok and has_formulas:
-                            # 重算失败且表里有公式：缓存值不可信。这时不能靠
-                            # _compare 放行——源与候选读到的是同一份陈旧值，
-                            # 逐格比对必然"一致"，会把旧缓存当成正确结果发布。
-                            problem = (f"强制重算失败（{has_formulas and '表内有公式'}），"
-                                       "公式缓存值未经重算，结果不可信；"
-                                       "请打开该工作簿让 Excel/WPS 重新计算后核对")
-                            stats["recalc_untrusted"] += 1
-                            problems.append(problem)
-                            stats["verify_detail"].append({"src": str(src),
-                                                           "out": str(out),
+                    # CSV 也要重算：CSV 里存的就是公式的显示值，源文件若是
+                    # 手动计算模式且缓存陈旧，不重算就会把旧值导出去（实测
+                    # 手工簿 A3 应为 6，未重算的 CSV 里写的是 999）。
+                    ok, method = _force_recalc(app)
+                    if ok:
+                        stats["recalc"] += 1
+                        stats["recalc_method"] = method
+                    else:
+                        stats["recalc_failed"] += 1
+                    snapshot = _snapshot(wb)
+                    has_formulas = any(sheet["formulas"] for sheet in snapshot)
+                    if not ok and has_formulas:
+                        # 重算失败且表里有公式：缓存值不可信。这时不能靠
+                        # _compare 放行——源与候选读到的是同一份陈旧值，
+                        # 逐格比对必然"一致"，会把旧缓存当成正确结果发布。
+                        problem = (f"强制重算失败（{has_formulas and '表内有公式'}），"
+                                   "公式缓存值未经重算，结果不可信；"
+                                   "请打开该工作簿让 Excel/WPS 重新计算后核对")
+                        stats["recalc_untrusted"] += 1
+                        problems.append(problem)
+                        stats["verify_detail"].append({"src": str(src),
+                                                       "out": str(out),
                                                            "problems": [problem]})
                     wb.SaveAs(str(candidate), FileFormat=EXCEL_FMT_MAP[ext],
                               CreateBackup=False)
@@ -370,7 +372,8 @@ def run_excel_convert(files: List[Path], target_ext: str) -> Dict[str, Any]:
 
                 # 重算失败但表内无公式时 problems 为空，属于无害情况（没有缓存
                 # 值可担心）；有公式则已在上面记入 problems，不会被放行。
-                if snapshot is not None and not problems:
+                # CSV 是纯文本、没有单元格结构，无法逐格比对，只做重算。
+                if snapshot is not None and not problems and ext != "csv":
                     problems = _verify_candidate(app, candidate, snapshot)
                     if problems:
                         stats["verify_failed"] += 1
