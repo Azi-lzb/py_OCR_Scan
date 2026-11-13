@@ -105,6 +105,7 @@ class WebApi:
     def __init__(self, project_root) -> None:
         self.root = Path(project_root)
         self._excel_io_guard = threading.RLock()
+        self._log_guard = threading.Lock()
         self._excel_io_active = 0
         self.state: Dict[str, Any] = {
             "app_title": "OCR国库会计工具",
@@ -133,6 +134,8 @@ class WebApi:
             "tl_mode": "excel",        # 工具页转换类型：excel/word
             "template_auto": True,     # 自动匹配模板（设置可关：只用每图手动指定的 sheet）
             "auto_rotate": True,       # 自动纠正页面方向（设置可关：照片已摆正时省数秒/张）
+            "ocr_workers": 0,          # 0=自动上限12，1～12=指定上限，均按资源动态调整
+            "ocr_parallel_limit": 1,
             "excel_io_backend": "auto",  # auto | fast | compat
             "excel_io_busy": False,
             "log": [],
@@ -752,6 +755,16 @@ class WebApi:
         self._log("自动旋转：" + ("开启" if on else "关闭（跳过方向探测，请确保照片方向正确）"))
         return self.state
 
+    def set_ocr_workers(self, workers: int) -> Dict[str, Any]:
+        if self.state["busy"]:
+            raise RuntimeError("识别进行中，不能切换并行数量")
+        if type(workers) is not int or not 0 <= workers <= 12:
+            raise ValueError("识别并行上限只能为自动或 1～12 张")
+        self.state["ocr_workers"] = int(workers)
+        self._save_last_paths()
+        self._log(f"自动并行上限：{workers or 12} 张")
+        return self.state
+
     def set_page_template(self, index: int, name: str) -> Dict[str, Any]:
         """给某页指定模板：""=自动匹配，"__none__"=不用，"文档::页名"=指定页。"""
         if 0 <= index < len(self.state["images"]):
@@ -1075,48 +1088,101 @@ class WebApi:
 
     def _worker(self, pending: List[int], force_text: bool = False) -> None:
         from .service import Scan2ExcelService
-        service = Scan2ExcelService()
-        try:
-            for idx in pending:
-                if self._cancel.is_set():
-                    break
-                info = self.state["images"][idx]
-                info["status"] = "识别中"
-                self._log(f"开始识别：{info['name']}" + ("（文字模式）" if force_text else ""))
+        from .ocr_batch import iter_ocr_results
+        from .ocr_resources import ResourceMonitor, choose_parallelism
+        mode = self.state.get("ocr_workers", 0)
+        high_accuracy = bool(self.state.get("high_accuracy"))
+        auto_rotate = bool(self.state.get("auto_rotate", True))
+        template_auto = bool(self.state.get("template_auto", True))
+        configured_limit = mode or 12
+        workers = min(configured_limit, len(pending), max(1, (os.cpu_count() or 1) // 2))
+        # 首次模板采样会写几何表，整批保持顺序以避免并发改同一个用户模板。
+        missing_geometry = not force_text and any(
+            hasattr(t, "path") and any(not p.col_fracs or not p.row_fracs for p in t.pages)
+            for t in self._templates)
+        if missing_geometry:
+            workers = 1
+            self._log("模板需要首次记录几何，本批使用顺序识别")
+        local = threading.local()
+        idle_services = []
+        service_guard = threading.Lock()
+        active_services = 0
+        monitor = ResourceMonitor() if workers > 1 else None
+        if monitor:
+            time.sleep(0.2)  # 后台采样，不阻塞界面。
+        previous_limit = 1
 
-                def on_step(text: str, _info=info) -> None:
-                    self._log(text, detail=True)
+        def capacity():
+            nonlocal previous_limit
+            if monitor:
+                limit, reason = choose_parallelism(
+                    *monitor.sample(), previous=previous_limit, high_accuracy=high_accuracy,
+                    max_workers=workers)
+            else:
+                limit, reason = workers, "顺序识别" if workers == 1 else "手动并行"
+            limit = min(workers, limit)
+            if limit != self.state.get("ocr_parallel_limit") or not hasattr(local, "announced"):
+                self._log(f"本批同时识别最多 {limit} 张：{reason}")
+                local.announced = True
+            previous_limit = limit
+            self.state["ocr_parallel_limit"] = limit
+            # 降并行时只释放闲置模型，运行中的实例继续完成当前图片。
+            with service_guard:
+                while idle_services and len(idle_services) + active_services > limit:
+                    idle_services.pop()
+            return limit
 
-                # 模板解析：图片显式指定的 sheet 优先；"__none__" = 本页不用模板；
-                # 未指定且设置开着自动匹配才全库匹配（关掉后只用手动指定的，
-                # 用户预先把每张图的 sheet 选好可省去匹配开销）
+        def on_start(idx):
+            info = self.state["images"][idx]
+            info["status"] = "识别中"
+            self._log(f"开始识别：{info['name']}" + ("（文字模式）" if force_text else ""))
+
+        def process(idx):
+            nonlocal active_services
+            if self._cancel.is_set():
+                raise RuntimeError("已取消识别")
+            with service_guard:
+                service = idle_services.pop() if idle_services else None
+                active_services += 1
+            try:
+                if service is None:
+                    threads = min(3, max(1, (os.cpu_count() or 1) // workers)) if workers > 1 else None
+                    service = Scan2ExcelService(ocr_threads=threads)
+                info = dict(self.state["images"][idx])
+                def on_step(text):
+                    self._log(f"{info['name']}：{text}" if workers > 1 else text, detail=True)
                 tname = str(info.get("template_name") or "")
                 if tname == "__none__":
                     tpl_list, tname = None, ""
-                elif tname:
-                    tpl_list = list(self._templates)
                 else:
-                    tpl_list = (list(self._templates)
-                                if self.state.get("template_auto", True) else None)
+                    tpl_list = list(self._templates) if tname or template_auto else None
+                return service.process_image(
+                    info["path"], on_step=on_step, cancel_event=self._cancel,
+                    force_text=force_text, server_rec=high_accuracy,
+                    ignore_regions=info.get("ignore_regions") or [], templates=tpl_list,
+                    template_name=tname, template_page=info.get("template_page", ""),
+                    fill_mode=info.get("fill_mode", "vlookup"), auto_rotate=auto_rotate)
+            finally:
+                with service_guard:
+                    active_services -= 1
+                    if service is not None:
+                        idle_services.append(service)
+
+        try:
+            if workers == 1:
+                capacity()
+            for idx, future in iter_ocr_results(
+                    pending, process, workers, self._cancel, on_start, capacity):
+                info = self.state["images"][idx]
                 try:
-                    page = service.process_image(
-                        info["path"], on_step=on_step,
-                        cancel_event=self._cancel,
-                        force_text=force_text,
-                        server_rec=bool(self.state.get("high_accuracy")),
-                        ignore_regions=info.get("ignore_regions") or [],
-                        templates=tpl_list,
-                        template_name=tname,
-                        template_page=info.get("template_page", ""),
-                        fill_mode=info.get("fill_mode", "vlookup"),
-                        auto_rotate=bool(self.state.get("auto_rotate", True)))
+                    page = future.result()
                 except Exception as exc:  # noqa: BLE001
                     # process_image 内部已兜住单图错误，只有"用户取消"会向外抛；
                     # 其余异常如实报告（此前一律记成"已取消"，掩盖真实原因）
                     if self._cancel.is_set():
                         info["status"] = "等待"
                         self._log("已取消识别")
-                        break
+                        continue
                     info["status"] = "失败"
                     info["error"] = f"{type(exc).__name__}: {exc}"
                     self._log(f"识别失败：{info['name']} —— {info['error']}")
@@ -1160,6 +1226,8 @@ class WebApi:
                     f"识别完成：成功 {done} 张" if fail == 0
                     else f"识别结束：成功 {done} 张，失败 {fail} 张")
                 self._log(self.state["status"])
+            else:
+                self.state["status"] = "识别已取消，已完成的结果已保留"
         except Exception as exc:  # noqa: BLE001
             self.state["status"] = f"发生错误：{exc}"
             self._log("内部错误：" + traceback.format_exc(limit=3))
@@ -1465,6 +1533,7 @@ class WebApi:
     # ------------------------------------------------------------------ #
     def attach_window(self, window) -> None:
         self._window = window
+        window.events.closed += self.cancel_ocr
 
     # 文件对话框模式（设置页可选；参考 open-data-audit 的三模式 + 自动档）
     PICKER_MODES = ("自动", "系统原生", "Tk 对话框", "浏览器内置")
@@ -1495,6 +1564,7 @@ class WebApi:
     def _save_last_paths(self) -> None:
         import json
         data = {
+            "ocr_workers": self.state.get("ocr_workers", 0),
             "excel_io_backend": self.state.get("excel_io_backend", "auto"),
             "dp_mode": self.state.get("dp_mode"),
             "宽表汇总": {"source": self.state["dp"].get("source", "")},
@@ -1516,6 +1586,8 @@ class WebApi:
         """启动时把上次的选择恢复到 state（文件不存在则忽略该项）。"""
         import os
         data = self._load_last_paths()
+        if type(data.get("ocr_workers")) is int and 0 <= data["ocr_workers"] <= 12:
+            self.state["ocr_workers"] = int(data["ocr_workers"])
         if data.get("dp_mode") in self.DP_MODES:
             self.state["dp_mode"] = data["dp_mode"]
         src = (data.get("宽表汇总") or {}).get("source", "")
@@ -2017,9 +2089,10 @@ class WebApi:
     # ------------------------------------------------------------------ #
     def _log(self, text: str, detail: bool = False) -> None:
         entry = {"time": datetime.now().strftime("%H:%M:%S"), "text": str(text)}
-        self.state["log"].append(entry)
-        if len(self.state["log"]) > 100:
-            del self.state["log"][:-100]
+        with self._log_guard:
+            self.state["log"].append(entry)
+            if len(self.state["log"]) > 100:
+                del self.state["log"][:-100]
 
     def _refresh_status(self) -> None:
         n = len(self.state["images"])

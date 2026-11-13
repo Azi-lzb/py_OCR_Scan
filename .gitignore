@@ -6,6 +6,7 @@
 **/build/
 *.pyc
 *.log
+/tmp/
 
 # ==== 运行时数据（PID、上传缓存等，可随时重建）====
 /core/data/

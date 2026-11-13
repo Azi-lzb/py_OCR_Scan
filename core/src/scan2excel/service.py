@@ -126,10 +126,18 @@ class TablePage:
 class Scan2ExcelService:
     """识别管线。cancel_event 由调用方持有，worker 内周期检查。"""
 
-    def __init__(self) -> None:
+    def __init__(self, ocr_threads: Optional[int] = None) -> None:
         self._server_rec = False   # 高精度档（由 process_image 每次设置）
+        self._ocr_threads = ocr_threads
+        self._private_engines: Dict = {}
 
     def _engine(self):
+        # 并行页的服务实例由各工作线程独占，避免共享 RapidOCR 的可变状态。
+        if self._ocr_threads is not None:
+            if self._server_rec not in self._private_engines:
+                self._private_engines[self._server_rec] = OcrEngine(
+                    server_rec=self._server_rec, num_threads=self._ocr_threads)
+            return self._private_engines[self._server_rec]
         return OcrEngine.instance(server_rec=self._server_rec)
 
     def process_image(self, path: str, on_step: Optional[StepCallback] = None,
@@ -231,6 +239,26 @@ class Scan2ExcelService:
           通过绝对门槛）——绝对分不可信，只信"正立显著优于倒置"
           （≥1.35 倍）的相对比较，因此正立/倒置页固定补测一个 180°。
         """
+        # 先抽样大文字框；只有方向优势明确时采用，否则完整复用原探测。
+        # 不削减正式 OCR 的检测框、分辨率或识别模型。
+        try:
+            probes = {0: self._probe_quality(img, sampled=True)}
+            turns = (1, 2, 3) if (probes[0]["tall_ratio"] > 0.5
+                                     or probes[0]["q"] < 24) else (2,)
+            for k in turns:
+                probes[k] = self._probe_quality(np.rot90(img, k), sampled=True)
+            ranked = sorted(probes, key=lambda k: probes[k]["q"], reverse=True)
+            winner, runner = ranked[:2]
+            best = probes[winner]
+            if (best["n_items"] >= 4 and best["mean_score"] >= 0.85
+                    and best["q"] >= max(24.0, probes[runner]["q"] * 1.6)):
+                if winner:
+                    self._step(on_step, f"已自动转正页面方向（旋转 {winner * 90}°）")
+                    return np.rot90(img, winner)
+                return img
+        except Exception:
+            pass
+
         try:
             q0 = self._probe_quality(img)
         except Exception:
@@ -259,15 +287,17 @@ class Scan2ExcelService:
             return np.rot90(img, best_k)
         return img
 
-    def _probe_quality(self, img) -> Dict:
+    def _probe_quality(self, img, sampled: bool = False) -> Dict:
         """小图探测，返回 q（综合质量分）与 tall_ratio（高瘦文字框占比）。"""
         h, w = img.shape[:2]
-        scale = 600.0 / max(h, w)
+        # 抽样直接缩到最终探测尺寸，避免先缩至 600 再放大 1.5 倍损伤小字。
+        scale = (900.0 if sampled else 600.0) / max(h, w)
         small = cv2.resize(img, (int(w * scale), int(h * scale)),
                            interpolation=cv2.INTER_AREA) if scale < 1.0 else img
-        items = self._engine().recognize_full(small, use_cls=False)
+        kwargs = {"max_rec_boxes": 12, "upscale": False} if sampled else {}
+        items = self._engine().recognize_full(small, use_cls=False, **kwargs)
         if not items:
-            return {"q": 0.0, "tall_ratio": 0.0}
+            return {"q": 0.0, "tall_ratio": 0.0, "n_items": 0, "mean_score": 0.0}
         chars = sum(len(str(t)) for _, t, _ in items)
         scores = [float(s) for _, _, s in items]
         mean_score = sum(scores) / len(scores)
@@ -276,7 +306,8 @@ class Scan2ExcelService:
                    > 1.2 * (max(p[0] for p in box) - min(p[0] for p in box)))
         tall_ratio = tall / len(items)
         q = chars * mean_score * (0.5 if tall_ratio > 0.5 else 1.0)
-        return {"q": q, "tall_ratio": tall_ratio}
+        return {"q": q, "tall_ratio": tall_ratio,
+                "n_items": len(items), "mean_score": mean_score}
 
     # ------------------------------------------------------------------ #
     # 无框线表格（SLANet-Plus 结构识别）

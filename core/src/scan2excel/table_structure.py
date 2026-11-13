@@ -90,6 +90,7 @@ class TableStructureEngine:
     def __init__(self) -> None:
         from rapid_table import RapidTable
         from rapid_table.utils.typings import ModelType, RapidTableInput
+        self._infer_lock = threading.Lock()
 
         # use_ocr=True 但始终传入自带 OCR 结果（get_ocr_results 优先用
         # ocr_results，不会调用内置 rapidocr）；pred_html 只在该分支生成
@@ -97,6 +98,11 @@ class TableStructureEngine:
             RapidTableInput(model_type=ModelType.SLANETPLUS, use_ocr=True))
 
     def recognize(self, img: np.ndarray, ocr_items: List) -> Optional[Dict]:
+        # 无框线回退模型仍为单例；完整调用串行，避免并行页共享内部状态。
+        with self._infer_lock:
+            return self._recognize(img, ocr_items)
+
+    def _recognize(self, img: np.ndarray, ocr_items: List) -> Optional[Dict]:
         """输入整图与 OCR 结果，返回 {rows, merges, cell_bboxes}；失败返回 None。
 
         ocr_items: [[box, text, score], ...]（与 OcrEngine.recognize_full 输出一致）。

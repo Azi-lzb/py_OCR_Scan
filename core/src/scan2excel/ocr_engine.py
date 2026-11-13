@@ -6,6 +6,7 @@ rapidocr-onnxruntime 的模型打包在 wheel 内，加载即离线可用。
 from __future__ import annotations
 
 import sys
+import os
 import threading
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -34,6 +35,7 @@ _SERVER_REC_NAME = "ch_PP-OCRv4_rec_server_infer.onnx"
 class OcrEngine:
     _instances: dict = {}
     _lock = threading.Lock()
+    _model_lock = threading.Lock()
 
     @classmethod
     def instance(cls, server_rec: bool = False) -> "OcrEngine":
@@ -45,12 +47,17 @@ class OcrEngine:
                     cls._instances[key] = cls(server_rec=server_rec)
         return cls._instances[key]
 
-    def __init__(self, server_rec: bool = False) -> None:
+    def __init__(self, server_rec: bool = False,
+                 num_threads: Optional[int] = None) -> None:
         from rapidocr_onnxruntime import RapidOCR  # 延迟导入，加快启动
         self.server_rec = server_rec
         kwargs = {}
+        if num_threads is not None:
+            kwargs["intra_op_num_threads"] = max(1, min(num_threads, os.cpu_count() or 1))
+            kwargs["inter_op_num_threads"] = 1
         if server_rec:
-            path = ensure_server_rec_model()
+            with self._model_lock:
+                path = ensure_server_rec_model()
             if path:
                 kwargs["rec_model_path"] = str(path)
             else:
@@ -68,13 +75,15 @@ class OcrEngine:
 
     # ------------------------------------------------------------------
     def recognize_full(self, img: np.ndarray, use_cls: bool = True,
-                       upscale: bool = True) -> List:
+                       upscale: bool = True,
+                       max_rec_boxes: Optional[int] = None) -> List:
         """整表识别一次（det+cls+rec），返回 [[box, text, score], ...]。
 
         det 阶段会精确裁出每条文字，识别质量显著高于把整个格子塞给
         rec；一次调用覆盖全图所有文字，供上层按坐标分配到单元格。
         低分辨率输入先放大（box 坐标同步换算回原图坐标系）。
         use_cls=False 用于方向探测（倒立文字分数会明显下降）。
+        max_rec_boxes 仅用于方向抽样，默认 None 不限制正式识别文字框。
         """
         scale = 1.0
         h, w = img.shape[:2]
@@ -82,7 +91,25 @@ class OcrEngine:
             scale = UPSCALE
             img = cv2.resize(img, (int(w * scale), int(h * scale)),
                              interpolation=cv2.INTER_CUBIC)
-        result, _ = self._engine(img, use_cls=use_cls)
+        if max_rec_boxes is None:
+            result, _ = self._engine(img, use_cls=use_cls)
+        else:
+            # 仅供方向探测抽样；正式识别仍处理全部文字框。保留完整 det，
+            # 优先识别面积较大的清晰文字，避免为方向判断逐条识别整页金额。
+            boxes, _ = self._engine(img, use_cls=False, use_rec=False)
+            boxes = sorted(boxes or [], key=lambda b:
+                           (max(p[0] for p in b) - min(p[0] for p in b)) *
+                           (max(p[1] for p in b) - min(p[1] for p in b)),
+                           reverse=True)[:max(1, max_rec_boxes)]
+            if not boxes:
+                return []
+            crops = self._engine.get_crop_img_list(
+                img, [np.asarray(b, dtype=np.float32) for b in boxes])
+            if use_cls:
+                crops, _, _ = self._engine.text_cls(crops)
+            rec, _ = self._engine.text_rec(crops)
+            result = [[b, str(t), float(s)] for b, (t, s) in zip(boxes, rec)
+                      if str(t).strip() and float(s) >= self._engine.text_score]
         if not result or scale == 1.0:
             return [item for item in (result or []) if str(item[1]).strip()]
         out = []

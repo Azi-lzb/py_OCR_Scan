@@ -379,6 +379,30 @@ def _numeric_text(v) -> str:
     return re.sub(r"[\s,，]", "", "" if v is None else str(v))
 
 
+def _has_overlapping_numeric_fragments(items) -> bool:
+    """相邻数值 OCR 框若几何重叠且文本首尾重复，说明字符可能被重复识别。"""
+    ordered = sorted(items, key=lambda item: item[0])
+    for left, right in zip(ordered, ordered[1:]):
+        cx0, rx0, text0, _score0 = left
+        cx1, rx1, text1, _score1 = right
+        if (not re.fullmatch(r"[\d,.+\-]+", text0)
+                or not re.fullmatch(r"[\d,.+\-]+", text1)):
+            continue
+
+        # OCR 项只保留中心点与右边缘；对近似矩形的文字框可由此还原左边缘。
+        lx0, lx1 = 2 * cx0 - rx0, 2 * cx1 - rx1
+        overlap = rx0 - lx1
+        min_width = min(rx0 - lx0, rx1 - lx1)
+        if overlap < max(2.0, min_width * 0.15):
+            continue
+
+        # 只复核确实存在字符级首尾重复的重叠框，普通分段小数保持原拼接。
+        max_shared = min(3, len(text0), len(text1))
+        if any(text0[-n:] == text1[:n] for n in range(1, max_shared + 1)):
+            return True
+    return False
+
+
 def _looks_numeric(v) -> bool:
     s = _numeric_text(v)
     if not s:
@@ -1243,12 +1267,13 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
             items_all[i] = (li, tc_best, cx, rx, t, s)
             if tc_best != tc0:
                 n_fixed += 1
-    filled_by_line: Dict[int, Dict[int, List[Tuple[float, str, float]]]] = {}
+    filled_by_line: Dict[int, Dict[int, List[Tuple[float, float, str, float]]]] = {}
     for li, tc, cx, rx, t, s in items_all:
-        filled_by_line.setdefault(li, {}).setdefault(tc, []).append((cx, t, s))
+        filled_by_line.setdefault(li, {}).setdefault(tc, []).append((cx, rx, t, s))
     if n_fixed:
         warnings.append(f"{n_fixed} 处数值列位按同列对齐自动校正，请抽查")
 
+    n_overlap_corrected = 0
     for (tr, tc) in sorted(tpl_page.num_cells):
         if tr >= len(out_rows) or tc >= len(out_rows[tr]):
             continue
@@ -1259,8 +1284,33 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
         if fill_mode == "vlookup":
             got = filled_by_line.get(key, {}).get(tc, [])
             got.sort(key=lambda e: e[0])
-            text = "".join(t for _cx, t, _s in got)
-            score = min((s for _cx, _t, s in got), default=1.0)
+            text = "".join(t for _cx, _rx, t, _s in got)
+            score = min((s for _cx, _rx, _t, s in got), default=1.0)
+            if got and _has_overlapping_numeric_fragments(got):
+                # 长金额可能被 det 切成两个相互覆盖的框，并在接缝处重复一个数字。
+                # 保留 VLOOKUP 的行列定位，只对这个单元格区域重跑 numeric rec。
+                ln = lines[key]
+                if len(structure.xs) == n_cols + 1:
+                    x0, x1 = structure.xs[tc], structure.xs[tc + 1]
+                else:
+                    x0, x1 = col_band.get(tc, (0, W))
+                grid_row = next((r for r, (top, bottom) in enumerate(
+                    zip(structure.ys, structure.ys[1:])
+                ) if top <= ln["y"] < bottom), None)
+                if grid_row is not None:
+                    y0, y1 = structure.ys[grid_row], structure.ys[grid_row + 1]
+                else:
+                    y0 = int(round(ln["y"] - ln["tol"]))
+                    y1 = int(round(ln["y"] + ln["tol"]))
+                crop = structure.image[max(0, y0 - 2):min(H, y1 + 2),
+                                       max(0, x0 - 2):min(W, x1 + 2)]
+                if crop.size:
+                    refined, refined_score = engine.recognize_cell_numeric(crop)
+                    if (refined and refined_score >= 0.5
+                            and re.fullmatch(r"[+-]?\d(?:[\d,]*\d)?(?:\.\d+)?", refined)):
+                        if _numeric_text(refined) != _numeric_text(text):
+                            n_overlap_corrected += 1
+                        text, score = refined, refined_score
         else:
             text, score = cell_text(key, tc)
         if text and not _has_meaningful(text):
@@ -1271,6 +1321,9 @@ def apply_xlsx_template(page, structure, tpl_page: XlsxSheetPage,
         if text:
             page.scores[f"{tr},{tc}"] = score
             page.min_score = min(page.min_score, score)
+
+    if n_overlap_corrected:
+        warnings.append(f"{n_overlap_corrected} 个 OCR 数值框发生重叠，已按单元格复核")
 
     # 覆盖预览：数字区绿框（vlookup=实际取数的文字行条带；position=几何格）
     import cv2

@@ -801,6 +801,30 @@ try{(function(){var m=localStorage.getItem('uiTheme');if(m==='夜间'||m==='深�
         </div>
         <div class="gen-row">
           <div class="gen-row-left">
+            <div class="gen-row-name">批量识别上限</div>
+            <div class="gen-row-desc">根据 CPU 负载、可用内存和识别档位，在上限内自动调整，同时最多 12 张。资源不足时减少新任务，正在识别的图片正常完成。</div>
+          </div>
+          <div class="gen-row-right">
+            <span class="engine-status" id="ocrParallelStatus"></span>
+            <select id="selOcrWorkers" class="gen-select">
+              <option value="0">自动（最多 12 张）</option>
+              <option value="1">顺序识别（1 张）</option>
+              <option value="2">最多 2 张</option>
+              <option value="3">最多 3 张</option>
+              <option value="4">最多 4 张</option>
+              <option value="5">最多 5 张</option>
+              <option value="6">最多 6 张</option>
+              <option value="7">最多 7 张</option>
+              <option value="8">最多 8 张</option>
+              <option value="9">最多 9 张</option>
+              <option value="10">最多 10 张</option>
+              <option value="11">最多 11 张</option>
+              <option value="12">最多 12 张</option>
+            </select>
+          </div>
+        </div>
+        <div class="gen-row">
+          <div class="gen-row-left">
             <div class="gen-row-name">扫描王</div>
             <div class="gen-row-desc">拍照图转扫描件（透视拉平、去阴影、增强/黑白/灰度，可导出 JPG/PDF）。默认关闭并隐藏导航入口；开启后导航栏显示「扫描王」页签。</div>
           </div>
@@ -1051,6 +1075,14 @@ function syncNav(name){
     api('set_auto_rotate', on).then(function(st){
       S = st; render();
       toast(on ? '自动旋转：开启' : '自动旋转：关闭（请确保照片方向已摆正）', 'ok');
+    }).catch(function(e){ toast(e.message||String(e), 'err'); });
+  });
+  var selWorkers = document.getElementById('selOcrWorkers');
+  if(selWorkers) selWorkers.addEventListener('change', function(){
+    var workers = parseInt(selWorkers.value, 10);
+    api('set_ocr_workers', workers).then(function(st){
+      S = st; render();
+      toast('自动并行：上限 ' + (workers || 12) + ' 张', 'ok');
     }).catch(function(e){ toast(e.message||String(e), 'err'); });
   });
   var selScanEn = document.getElementById('selScanEnabled');
@@ -1339,6 +1371,14 @@ function syncEngineSetting(){
   var rot = $("selAutoRot");
   if(rot && document.activeElement !== rot)
     rot.value = (S.auto_rotate === false) ? "off" : "on";
+  var workers = $("selOcrWorkers");
+  if(workers){
+    if(document.activeElement !== workers) workers.value = String(S.ocr_workers || 0);
+    workers.disabled = !!S.busy;
+    $("ocrParallelStatus").textContent = S.busy
+      ? "本批最多同时 " + (S.ocr_parallel_limit || 1) + " 张"
+      : "自动调整，上限 " + (S.ocr_workers || 12) + " 张";
+  }
   var tpl = $("selTplAuto");
   if(tpl && document.activeElement !== tpl)
     tpl.value = (S.template_auto === false) ? "off" : "on";
