@@ -1,9 +1,13 @@
 .git
 .venv
+tmp
+data
+.zcode
 external
 tests
 **/__pycache__
 **/*.py[cod]
+**/~$*
 **/build
 **/dist
 

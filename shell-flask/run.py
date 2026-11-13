@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import os
 import socket
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -51,6 +52,15 @@ def write_pid(port: int) -> None:
 
 
 def open_browser(url: str) -> None:
+    if sys.platform.startswith("linux"):
+        from scan2excel.platform_runtime import system_app_environment
+        try:
+            subprocess.Popen(["xdg-open", url], env=system_app_environment(),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        except OSError:
+            print(f"请在浏览器中打开：{url}")
+        return
     webbrowser.open(url)
 
 

@@ -66,6 +66,7 @@ def build() -> int:
         # 无框线表格模型（SLANet-Plus）与 PDF 渲染引擎
         "--collect-all", "rapid_table",
         "--collect-all", "pypdfium2",
+        "--collect-all", "pillow_heif",
         "--exclude-module", "torch",
         "--exclude-module", "pandas",
         "--exclude-module", "matplotlib",

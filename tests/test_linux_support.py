@@ -15,6 +15,7 @@ sys.path.insert(0, str(HERE.parent / "shell-flask"))
 
 import build_deb
 from scan2excel.web_app import WebApi
+from scan2excel.platform_runtime import packaged_target_path, system_app_environment
 
 
 def check_deb_archive(root: Path) -> None:
@@ -43,13 +44,40 @@ def check_deb_archive(root: Path) -> None:
     assert list(members) == ["debian-binary", "control.tar.gz", "data.tar.gz"]
     assert members["debian-binary"] == b"2.0\n"
     with tarfile.open(fileobj=io.BytesIO(members["control.tar.gz"]), mode="r:gz") as archive:
+        assert not any(member.pax_headers for member in archive), "Debian 10 dpkg rejects PAX headers"
         assert archive.extractfile("control").read().startswith(b"Package: test")
     with tarfile.open(fileobj=io.BytesIO(members["data.tar.gz"]), mode="r:gz") as archive:
+        assert not any(member.pax_headers for member in archive), "Debian 10 dpkg rejects PAX headers"
         assert archive.extractfile("opt/ocr-guoku/app.bin").read() == b"fixture"
 
 
 def main() -> int:
+    with patch("scan2excel.platform_runtime.sys.platform", "linux"), \
+         patch("scan2excel.platform_runtime.sys.frozen", True, create=True), \
+         patch.dict("os.environ", {"LD_LIBRARY_PATH": "/bundle", "LD_LIBRARY_PATH_ORIG": "/system"}):
+        env = system_app_environment()
+        assert env["LD_LIBRARY_PATH"] == "/system"
+        assert "LD_LIBRARY_PATH_ORIG" not in env
+    with patch("scan2excel.platform_runtime.sys.platform", "linux"), \
+         patch("scan2excel.platform_runtime.sys.frozen", True, create=True), \
+         patch.dict("os.environ", {"LD_LIBRARY_PATH": "/bundle"}, clear=True):
+        assert "LD_LIBRARY_PATH" not in system_app_environment()
     with tempfile.TemporaryDirectory() as td:
+        core = Path(td)
+        target = core / "data/transforms/国库报表.xlsx"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"fixture")
+        with patch("scan2excel.platform_runtime.sys.platform", "linux"):
+            assert packaged_target_path(r"C:\old\core\data\transforms\国库报表.xlsx", core) == str(target)
+            assert packaged_target_path("/custom/report.xlsx", core) == "/custom/report.xlsx"
+            try:
+                packaged_target_path(r"D:\custom\report.xlsx", core)
+            except RuntimeError as exc:
+                assert "Windows 路径" in str(exc)
+            else:
+                raise AssertionError("Unknown Windows targets must not be silently rewritten")
+        with patch("scan2excel.platform_runtime.sys.platform", "win32"):
+            assert packaged_target_path(r"C:\old\core\data\transforms\国库报表.xlsx", core).startswith("C:")
         check_deb_archive(Path(td))
         api = WebApi(Path(td))
         with patch("scan2excel.web_app.sys.platform", "linux"):

@@ -344,6 +344,16 @@ class WebApi:
         if not cfg.is_file():
             raise RuntimeError(f"未找到规则配置：{cfg}")
         rules = load_rules_v2(cfg)
+        if sys.platform.startswith("linux"):
+            from .platform_runtime import packaged_target_path
+            for rule in rules:
+                if not rule.get("target_write", True):
+                    continue
+                original = str(rule.get("target_wb") or "")
+                relocated = packaged_target_path(original, self.root)
+                rule["target_wb"] = relocated
+                if relocated != original:
+                    self._log(f"Linux 目标工作簿：{relocated}")
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out = src.parent / f"宽表汇总_{stamp}.xlsx"
         res = wide_summary(src, rules, Path(out))
@@ -1360,8 +1370,10 @@ class WebApi:
             if sys.platform == "win32":
                 os.startfile(target)  # noqa: S606 —— Windows 本地工具
             elif sys.platform.startswith("linux"):
+                from .platform_runtime import system_app_environment
                 subprocess.Popen(["xdg-open", target], stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, start_new_session=True)
+                                 stderr=subprocess.DEVNULL, start_new_session=True,
+                                 env=system_app_environment())
             elif sys.platform == "darwin":
                 subprocess.Popen(["open", target], stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL, start_new_session=True)

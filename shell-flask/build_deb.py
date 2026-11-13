@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import io
+import json
 import os
 import platform
 import re
@@ -18,13 +21,7 @@ ROOT = Path(__file__).resolve().parent
 NAME = "OCR国库会计工具-Flask"
 PACKAGE = "ocr-guoku-accounting"
 INSTALL_DIR = Path("opt/ocr-guoku")
-SYSTEM_DEPENDS = (
-    "libc6 (>= 2.28), libstdc++6, libglib2.0-0, libgl1, libgomp1, "
-    "libssl1.1, libffi6, libreadline7, libtinfo6, libgnutls30, libgmp10, "
-    "libunistring2, libidn2-0, libhogweed4, libnettle6, libp11-kit0, "
-    "libtasn1-6, libx11-6, libxau6, libxext6, libice6, libsm6, "
-    "libbz2-1.0, liblzma5, libuuid1, zlib1g, xdg-utils"
-)
+SYSTEM_DEPENDS = "libc6 (>= 2.28), xdg-utils"
 
 
 def require_target_host() -> None:
@@ -37,10 +34,11 @@ def require_target_host() -> None:
         raise SystemExit(f"当前构建只支持 amd64，检测到架构：{machine}")
 
 
-def _write_wrapper(path: Path) -> None:
+def _write_wrapper(path: Path, portable: bool = False) -> None:
+    location = '"$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/app"' if portable else '/opt/ocr-guoku'
     script = f'''#!/bin/sh
 set -eu
-APP_DIR=/opt/ocr-guoku
+APP_DIR={location}
 USER_CORE="${{XDG_DATA_HOME:-$HOME/.local/share}}/ocr-guoku/core"
 mkdir -p "$USER_CORE/data"
 if [ -d "$APP_DIR/core/data" ]; then
@@ -70,7 +68,7 @@ StartupNotify=true
 
 def _tar_gz(root: Path, names: list[str]) -> bytes:
     buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz", format=tarfile.PAX_FORMAT) as archive:
+    with tarfile.open(fileobj=buffer, mode="w:gz", format=tarfile.GNU_FORMAT, compresslevel=6) as archive:
         for name in names:
             item = root / name
             archive.add(item, arcname=name, recursive=True)
@@ -112,7 +110,7 @@ def _write_control(stage: Path, version: str) -> None:
 def _make_deb(stage: Path, output: Path) -> None:
     # Debian's ar member should be named "control" inside the control archive.
     control_buffer = io.BytesIO()
-    with tarfile.open(fileobj=control_buffer, mode="w:gz", format=tarfile.PAX_FORMAT) as archive:
+    with tarfile.open(fileobj=control_buffer, mode="w:gz", format=tarfile.GNU_FORMAT) as archive:
         archive.add(stage / "DEBIAN" / "control", arcname="control")
     control_data = control_buffer.getvalue()
     data_names = ["opt", "usr"]
@@ -127,6 +125,46 @@ def _make_deb(stage: Path, output: Path) -> None:
     os.replace(temp, output)
 
 
+def bundle_linux_libraries(app_dir: Path) -> None:
+    """Close ELF dependencies without shipping glibc or its dynamic loader."""
+    internal = app_dir / "_internal"
+    env = os.environ.copy()
+    env["LD_LIBRARY_PATH"] = str(internal) + ":" + env.get("LD_LIBRARY_PATH", "")
+    glibc = re.compile(r"^(?:ld-linux.*|lib(?:c|m|pthread|dl|rt|resolv|util|anl|nss_[\w]+)\.so(?:\..*)?)$")
+    checked: set[Path] = set()
+    while True:
+        pending = []
+        for path in app_dir.rglob("*"):
+            if not path.is_file() or path.resolve() in checked:
+                continue
+            with path.open("rb") as stream:
+                if stream.read(4) == b"\x7fELF":
+                    pending.append(path)
+                    checked.add(path.resolve())
+        if not pending:
+            break
+        for path in pending:
+            versions = subprocess.check_output(["readelf", "--version-info", str(path)], text=True)
+            required = [tuple(map(int, v.split("."))) for v in re.findall(r"\bGLIBC_([0-9.]+)", versions)]
+            if required and max(required) > (2, 28):
+                raise RuntimeError(f"{path.name} requires glibc {max(required)} > 2.28")
+            linked = subprocess.run(["ldd", str(path)], env=env, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout
+            if "not found" in linked:
+                raise RuntimeError(f"Unresolved native dependency: {path}\n{linked}")
+            for name, source in re.findall(r"^\s*(\S+)\s+=>\s+(/\S+)", linked, re.M):
+                if glibc.match(name):
+                    continue
+                source_path = Path(source)
+                if internal.resolve() in source_path.resolve().parents:
+                    continue
+                destination = internal / name
+                if not destination.exists():
+                    shutil.copy2(source_path, destination)
+                    print(f"Bundled native library: {name}")
+    print(f"ELF audit passed: {len(checked)} files, glibc <= 2.28")
+
+
 def build_package(version: str, build_app: bool = True) -> Path:
     require_target_host()
     if build_app:
@@ -136,6 +174,13 @@ def build_package(version: str, build_app: bool = True) -> Path:
     executable = app_dir / NAME
     if not executable.is_file():
         raise SystemExit(f"PyInstaller 目录版不存在：{executable}")
+    bundle_linux_libraries(app_dir)
+    (app_dir / "build-info.json").write_text(json.dumps({
+        "version": version, "platform": "linux-x86_64", "glibc": platform.libc_ver()[1],
+        "python": platform.python_version(),
+        "packages": dict(sorted((d.metadata["Name"], d.version)
+                                for d in importlib.metadata.distributions() if d.metadata["Name"])),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
 
     stage = ROOT / "build" / "deb-root"
     resolved_stage = stage.resolve()
@@ -160,6 +205,32 @@ def build_package(version: str, build_app: bool = True) -> Path:
     _make_deb(stage, output)
     print(f"Debian 包已生成：{output}")
     print(f"应用文件大小：{size / 1048576:.1f} MiB")
+    portable = ROOT / "build" / f"{PACKAGE}-{version}-linux-x86_64-glibc2.28"
+    if portable.exists():
+        shutil.rmtree(portable)
+    portable.mkdir(parents=True)
+    shutil.copytree(app_dir, portable / "app")
+    _write_wrapper(portable / "start.sh", portable=True)
+    (portable / "README.txt").write_text(
+        "OCR 国库会计工具 — Linux x86_64 / glibc >= 2.28\n\n"
+        "解压后运行 ./start.sh；自动打开本机浏览器。无需安装 Python。\n"
+        "无桌面环境可运行 ./start.sh --no-browser，按终端提示访问地址。\n"
+        "配置与导出保存在 ${XDG_DATA_HOME:-$HOME/.local/share}/ocr-guoku/core/data。\n"
+        "已有配置和模板不会被覆盖。包内模型支持离线识别。\n"
+        "文件选择使用浏览器；Windows COM 格式转换不适用于 Linux。\n",
+        encoding="utf-8")
+    tar_output = ROOT / "dist" / f"{portable.name}.tar.gz"
+    with tarfile.open(tar_output, "w:gz", compresslevel=6) as archive:
+        archive.add(portable, arcname=portable.name)
+    print(f"便携包已生成：{tar_output}")
+    checksums = []
+    for artifact in (output, tar_output):
+        digest = hashlib.sha256()
+        with artifact.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        checksums.append(f"{digest.hexdigest()}  {artifact.name}\n")
+    (ROOT / "dist" / "SHA256SUMS").write_text("".join(checksums), encoding="ascii")
     return output
 
 
