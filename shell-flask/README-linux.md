@@ -2,6 +2,8 @@
 
 支持 x86_64、glibc 2.28 及以上的 Linux。使用本机浏览器界面，内置 Python、OCR 模型、PDF 与 Excel 依赖，无需安装 Python 或联网下载模型。
 
+[下载 Linux 1.0.20261113](https://github.com/Azi-lzb/py_OCR_Scan/releases/tag/v1.0.20261113-linux)。公开发行包清空了模板金额和目标簿历史明细，保留规则、模板几何与目标表头。
+
 ## 便携版
 
 ```sh
@@ -38,3 +40,11 @@ docker build -f shell-flask/Dockerfile.deb --build-arg APP_VERSION=1.0.20261113 
 ```
 
 构建在 manylinux glibc 2.28 环境进行，补充匹配的共享 libpython，收集应用需要的非 glibc 动态库，并逐个检查 ELF 的 GLIBC 版本要求。产物包含 `.deb`、`.tar.gz` 和 SHA-256 校验文件。Windows 发行目录不会被覆盖。
+
+本地打包种子可能包含用户数据。公开分发前，在独立目录准备公开包（保留原包）：
+
+```sh
+python shell-flask/prepare_public_release.py --source shell-flask/dist/linux-glibc2.28 --output shell-flask/dist/linux-public-1.0.20261113
+```
+
+该步骤只替换三个种子工作簿：模板数字区域清空金额、目标簿只保留「源数据时序」表头、配置中的默认目标路径改为通用路径；程序二进制与模型保持原样。发布输出目录中的安装包与对应 `SHA256SUMS`，不要上传本地原包或 `core/data/`。

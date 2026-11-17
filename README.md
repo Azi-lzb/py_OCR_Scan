@@ -3,6 +3,35 @@
 把**带打印框线的纸质表格**拍成照片，本地识别成可校对的表格，一键导出 Excel。
 全程离线运行（OCR 模型内置），适合"手工录入系统前先录 Excel 做校验"的场景。
 
+## 下载 Linux 发行版
+
+当前版本：[Linux 1.0.20261113（x86_64 / glibc 2.28+）](https://github.com/Azi-lzb/py_OCR_Scan/releases/tag/v1.0.20261113-linux)。内置 Python、OCR 模型、PDF 与 Excel 依赖，无需安装 Python 或首次联网下载模型，使用本机浏览器界面。
+
+- [下载 tar.gz 便携版](https://github.com/Azi-lzb/py_OCR_Scan/releases/download/v1.0.20261113-linux/ocr-guoku-accounting-1.0.20261113-linux-x86_64-glibc2.28.tar.gz)：解压即用。
+- [下载 Debian / Ubuntu 安装包](https://github.com/Azi-lzb/py_OCR_Scan/releases/download/v1.0.20261113-linux/ocr-guoku-accounting_1.0.20261113_amd64.deb)：安装后从应用菜单启动。
+- [SHA-256 校验文件](https://github.com/Azi-lzb/py_OCR_Scan/releases/download/v1.0.20261113-linux/SHA256SUMS)：与安装包放在同一目录，运行 `sha256sum --check --ignore-missing SHA256SUMS`。
+
+便携版：
+
+```sh
+tar -xzf ocr-guoku-accounting-1.0.20261113-linux-x86_64-glibc2.28.tar.gz
+cd ocr-guoku-accounting-1.0.20261113-linux-x86_64-glibc2.28
+./start.sh
+```
+
+Debian / Ubuntu：
+
+```sh
+sudo apt install ./ocr-guoku-accounting_1.0.20261113_amd64.deb
+ocr-guoku-accounting
+```
+
+系统需有浏览器；`xdg-utils` 用于自动打开默认浏览器。无桌面环境可运行 `./start.sh --no-browser`，按终端提示访问本机地址。默认端口 8750，被占用时自动选择 8751–8769。
+
+Linux 用户数据保存在 `${XDG_DATA_HOME:-$HOME/.local/share}/ocr-guoku/core/data/`。配置和模板仅在不存在时复制，升级保留已有文件。公开发行包保留规则、模板结构与目标表头，已清空模板金额和历史业务明细；请使用自己的业务文件。Linux 不包含依赖 Windows COM 的 Excel/WPS/Word 格式转换。
+
+验证环境为 Debian 10、Rocky Linux 8 容器：146 个 ELF 文件符合 glibc 2.28 要求；九月 12 页识别结果与 Windows 基线一致，勾稽异常 0；宽表 204 行全量比对一致，重复写入新增 0 行。真实 Linux 图形桌面交互尚未实机验证。详见 [Linux 使用与构建说明](shell-flask/README-linux.md)。
+
 ## 识别能力
 
 | 项目 | 说明 |
@@ -20,9 +49,9 @@
 | **月计表模板（xlsx）** | 模板即 Excel 文件：把校对好的一页"存为模板"后生成 .xlsx（命名区域「数字区域/结构区域」定义哪些格每月 OCR、哪些格冻结）。识别时用**表格外框+模板比例+文字锚点对齐**铺格，摆脱内部细线检测，尺寸差异与阴影都不受影响；结构区文本逐格校验。模板可用 Excel 直接查看编辑 |
 | **勾稽公式** | 保存模板时自动按行生成勾稽差额公式（上期借-贷 + 本期发生借-贷 − 期末借-贷 = 0），列在「勾稽」表；导出时本地求值，不平的行在日志告警。可在 Excel 中对差额列加条件格式做可视化标记 |
 | 内容 | 中文、英文、数字混合；纯数字自动转数值（可直接求和校验）；中文语境标点自动规范 |
-| 速度 | 约 3~10 秒/张（CPU，标准档；高精度档约慢 2~3 倍） |
+| 批量识别 | 并发上限可配置为 **1–12 张**，程序根据 CPU 和可用内存动态控制实际并发；速度取决于硬件、图片大小、模板与识别档位 |
 
-## 快速开始
+## Windows 从源码运行
 
 ### 1. 安装依赖（只需一次）
 
@@ -44,13 +73,14 @@ python -m venv .venv
 ### 3. 打包成免安装 exe（可选）
 
 ```
-.venv\Scripts\python.exe shell-pywebviewuild_exe.py   → dist\OCR_Tools\        （约 380 MB）
-.venv\Scripts\python.exe shell-flaskuild_exe.py       → dist\OCR_Tools-Flask\  （约 378 MB）
+.venv\Scripts\python.exe shell-pywebview\build_exe.py
+.venv\Scripts\python.exe shell-flask\build_exe.py
 ```
 
 文件夹版（PyInstaller onedir，`--clean --noconfirm` 全自动覆盖重建）：
 exe + _internal + core/data 种子（config/模板「不存在才复制」，升级不覆盖用户数据）。
 整个文件夹打 zip 即可分发到别的 Win10/11 机器。
+产物分别位于 `shell-pywebview/dist/OCR国库会计工具/` 和 `shell-flask/dist/OCR国库会计工具-Flask/`。
 
 ## 数据处理与工具
 
@@ -67,7 +97,7 @@ exe + _internal + core/data 种子（config/模板「不存在才复制」，升
 ## 使用流程
 
 1. **导入**：点"选择照片/PDF…"或**直接把文件拖进窗口**（PDF 自动逐页展开）
-2. **开始识别**：后台逐张识别；预览区可切换"原图 / 识别叠加"确认识别情况
+2. **开始识别**：设置并发上限（1–12 张），后台根据资源动态安排识别；预览区可切换"原图 / 识别叠加"确认识别情况
    （表格页显示切分框线，无框线表格显示结构模型单元格框，文字页显示绿框）
 3. **框选忽略区域**（可选）：在预览图上拖框圈出页眉/水印/印章，重新识别后跳过
 4. **识别文字（当前页）**：把当前页强制按整页文字识别（表格页也能提纯文字）
